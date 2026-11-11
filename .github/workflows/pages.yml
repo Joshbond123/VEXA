@@ -27,7 +27,7 @@ jobs:
           test -f assets/app.js
           test -f assets/phone-core.js
           # Guard: no secrets may ever ship in the frontend bundle.
-          if grep -RInE 'github_pat_|nvapi-|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}' --include='*.html' --include='*.js' --include='*.css' . ; then
+          if grep -RInE 'github_pat_[A-Za-z0-9_]{20,}|nvapi-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}' --include='*.html' --include='*.js' --include='*.css' . ; then
             echo "::error::A credential pattern was found in frontend files"; exit 1
           fi
           echo "static site OK"

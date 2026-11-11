@@ -31,16 +31,16 @@ const state = {
 const PROVIDERS = [
   {
     id: 'xai', name: 'xAI · Grok', endpoint: 'https://api.x.ai/v1/chat/completions',
-    models: ['grok-4', 'grok-3', 'grok-3-mini', 'grok-2-1212'], keyHint: 'xai-…',
+    models: ['grok-4', 'grok-3', 'grok-3-mini', 'grok-2-1212'], keyHint: 'xAI API key',
   },
   {
     id: 'nvidia', name: 'NVIDIA · Nemotron', endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
     models: ['nvidia/llama-3.1-nemotron-ultra-253b-v1', 'nvidia/llama-3.3-nemotron-super-49b-v1', 'nvidia/nemotron-4-340b-instruct'],
-    keyHint: 'nvapi-…',
+    keyHint: 'NVIDIA API key',
   },
   {
     id: 'openai', name: 'OpenAI', endpoint: 'https://api.openai.com/v1/chat/completions',
-    models: ['gpt-4o', 'gpt-4o-mini', 'o4-mini'], keyHint: 'sk-…',
+    models: ['gpt-4o', 'gpt-4o-mini', 'o4-mini'], keyHint: 'OpenAI API key',
   },
   {
     id: 'custom', name: 'Custom (OpenAI-compatible)', endpoint: '', models: ['custom-model'], keyHint: 'your key',
