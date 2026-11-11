@@ -1,0 +1,46 @@
+name: Deploy VEXA to GitHub Pages
+
+on:
+  push:
+    branches: [vexa, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sanity-check the static site
+        run: |
+          set -e
+          test -f index.html
+          test -f phone/index.html
+          test -f assets/app.js
+          test -f assets/phone-core.js
+          # Guard: no secrets may ever ship in the frontend bundle.
+          if grep -RInE 'github_pat_|nvapi-|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}' --include='*.html' --include='*.js' --include='*.css' . ; then
+            echo "::error::A credential pattern was found in frontend files"; exit 1
+          fi
+          echo "static site OK"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

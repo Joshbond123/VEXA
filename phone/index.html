@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#05070d" />
+<title>VEXA Phone — live Android device</title>
+<link rel="stylesheet" href="../assets/app.css" />
+<style>
+  html,body{height:100%;overflow:hidden;background:#05070d}
+  body{display:flex;flex-direction:column}
+  .p-top{
+    display:flex;align-items:center;gap:12px;padding:10px 14px;
+    background:linear-gradient(180deg,rgba(10,14,26,.96),rgba(10,14,26,.72));
+    border-bottom:1px solid var(--line);z-index:20;backdrop-filter:blur(10px);
+  }
+  .p-back{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:13px;font-weight:600}
+  .p-back:hover{color:#fff}
+  .p-title{font-weight:750;letter-spacing:.3px}
+  .p-title small{display:block;color:var(--dim);font-weight:500;font-size:11px;letter-spacing:0}
+  .p-status{
+    margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:20px;
+    background:var(--panel);border:1px solid var(--line);font-size:12.5px;color:var(--muted)
+  }
+  .p-stage{
+    position:relative;flex:1;display:grid;place-items:center;padding:10px;min-height:0;overflow:hidden;
+    background:radial-gradient(700px 420px at 50% 0%,rgba(91,140,255,.10),transparent 60%);
+  }
+  #screen{
+    max-width:100%;max-height:100%;border-radius:20px;background:#000;
+    box-shadow:0 30px 70px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.06);
+    touch-action:none;user-select:none;outline:none;display:block;
+  }
+  /* This overlay is the ONLY thing shown when there is no live picture.
+     It is text, never a picture of a phone. */
+  .p-overlay{
+    position:absolute;inset:0;display:grid;place-items:center;padding:28px;text-align:center;
+    background:rgba(5,7,13,.86);backdrop-filter:blur(3px);z-index:10;
+  }
+  .p-overlay[hidden]{display:none}
+  .ov-card{max-width:380px}
+  .ov-spin{
+    width:42px;height:42px;margin:0 auto 16px;border-radius:50%;
+    border:3px solid rgba(91,140,255,.2);border-top-color:var(--acc);animation:spin 1s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .ov-card h2{margin:0 0 8px;font-size:17px}
+  .ov-card p{margin:0 0 16px;color:var(--muted);font-size:13px}
+  .ov-card code{font-size:11.5px}
+  .p-bar{
+    display:flex;align-items:center;gap:8px;padding:10px 14px;
+    background:linear-gradient(0deg,rgba(10,14,26,.98),rgba(10,14,26,.75));
+    border-top:1px solid var(--line);z-index:20;
+  }
+  .p-bar .spacer{flex:1}
+  .kbtn{
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;
+    min-width:46px;height:44px;padding:0 14px;border-radius:13px;
+    background:var(--panel-2);border:1px solid var(--line-2);color:var(--text);
+    font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:.15s
+  }
+  .kbtn:hover{background:#182142}
+  .kbtn:active{transform:translateY(1px);background:#1d2745}
+  .kbtn svg{width:19px;height:19px}
+  .p-meta{display:flex;gap:14px;color:var(--dim);font-size:11.5px;padding:0 4px}
+  #kbd{position:fixed;opacity:0;pointer-events:none;left:-9999px;top:0}
+  @media (max-width:640px){
+    .p-title small{display:none}
+    .p-meta{display:none}
+  }
+</style>
+</head>
+<body>
+  <header class="p-top">
+    <a class="p-back" href="../">
+      <svg viewBox="0 0 24 24" style="width:17px;height:17px"><path d="M15 5l-7 7 7 7"/></svg>
+      Dashboard
+    </a>
+    <div class="p-title">VEXA Phone<small id="deviceName">connecting…</small></div>
+    <div class="p-status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting…</span></div>
+  </header>
+
+  <main class="p-stage" id="stage">
+    <canvas id="screen" width="576" height="1280" tabindex="0" aria-label="Live Android phone screen"></canvas>
+    <div class="p-overlay" id="overlay">
+      <div class="ov-card">
+        <div class="ov-spin" id="ovSpin"></div>
+        <h2 id="ovTitle">Connecting to your phone…</h2>
+        <p id="ovBody">Starting a secure stream to the Android device.</p>
+        <button class="btn btn-primary" id="ovRetry" hidden>Retry now</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="p-bar">
+    <button class="kbtn" id="btnRecents" title="Recent apps">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+    </button>
+    <button class="kbtn" id="btnHome" title="Home">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>
+    </button>
+    <button class="kbtn" id="btnBack" title="Back">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <div class="spacer"></div>
+    <div class="p-meta">
+      <span id="metaFps">— fps</span>
+      <span id="metaSession">—</span>
+    </div>
+    <button class="kbtn" id="btnKeyboard" title="Type on the phone">
+      <svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 13.5h10"/></svg>
+    </button>
+    <button class="kbtn" id="btnFull" title="Fullscreen">
+      <svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/></svg>
+    </button>
+    <button class="kbtn" id="btnReconnect" title="Reconnect">
+      <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg>
+    </button>
+  </footer>
+
+  <input id="kbd" autocapitalize="off" autocomplete="off" spellcheck="false" aria-label="Phone keyboard" />
+
+<script type="module">
+import { PhoneLink, STATES, backendUrl } from '../assets/phone-core.js';
+
+const canvas = document.getElementById('screen');
+const overlay = document.getElementById('overlay');
+const ovTitle = document.getElementById('ovTitle');
+const ovBody = document.getElementById('ovBody');
+const ovSpin = document.getElementById('ovSpin');
+const ovRetry = document.getElementById('ovRetry');
+const statusText = document.getElementById('statusText');
+const statusDot = document.getElementById('statusDot');
+const metaFps = document.getElementById('metaFps');
+const metaSession = document.getElementById('metaSession');
+const deviceName = document.getElementById('deviceName');
+const kbd = document.getElementById('kbd');
+
+const phone = new PhoneLink({ canvas });
+
+/* ---------------------------------------------------------------- status UI */
+const COPY = {
+  connecting: { title: 'Connecting to your phone…', body: 'Opening the secure stream to the Android device.' },
+  live:       { title: '', body: '' },
+  stalled:    { title: 'Picture stalled', body: 'The stream paused — requesting a fresh keyframe automatically.' },
+  reconnecting: { title: 'Reconnecting…', body: 'The connection dropped. Retrying automatically.' },
+  offline:    { title: 'Phone offline', body: 'No emulator session is attached right now. VEXA keeps retrying — it will reconnect on its own.' },
+  unsupported:{ title: 'This browser cannot decode the phone', body: 'The live picture needs H.264 WebCodecs (Chrome, Edge or Safari 16.4+).' },
+};
+
+function paint(s) {
+  const meta = STATES[s] || STATES.connecting;
+  statusText.textContent = meta.label;
+  statusDot.className = `dot ${meta.tone}${s === 'live' ? ' live' : ''}`;
+
+  if (s === 'live') { overlay.hidden = true; return; }
+  const copy = COPY[s] || COPY.connecting;
+  overlay.hidden = false;
+  ovTitle.textContent = copy.title;
+  ovBody.textContent = copy.body;
+  ovSpin.hidden = s === 'offline' || s === 'unsupported';
+  ovRetry.hidden = !(s === 'offline' || s === 'unsupported' || s === 'reconnecting');
+}
+
+phone.addEventListener('state', (e) => paint(e.detail));
+phone.addEventListener('session', (e) => {
+  const { sessionId, device } = e.detail;
+  metaSession.textContent = sessionId ? sessionId.split('_').slice(-1)[0] : 'no session';
+  if (device?.avdName) deviceName.textContent = device.avdName;
+});
+phone.addEventListener('tick', (e) => {
+  metaFps.textContent = `${e.detail.fps} fps`;
+});
+phone.addEventListener('frame', () => { overlay.hidden = true; });
+
+/* --------------------------------------------------------------- touch input */
+const staged = new Map();
+
+function norm(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+    y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    landscape: canvas.width > canvas.height,
+  };
+}
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  canvas.setPointerCapture(e.pointerId);
+  const p = { kind: 'pointer', action: 'down', pointerId: e.pointerId % 10, ...norm(e) };
+  staged.set(e.pointerId, p);
+  phone.sendInput(p);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!staged.has(e.pointerId)) return;
+  const now = performance.now();
+  if (now - (canvas._lastMove || 0) < 32) return;   // ~30 messages/s is plenty
+  canvas._lastMove = now;
+  const p = { kind: 'pointer', action: 'move', pointerId: e.pointerId % 10, ...norm(e) };
+  staged.set(e.pointerId, p);
+  phone.sendInput(p);
+});
+
+function endPointer(e, action) {
+  if (!staged.has(e.pointerId)) return;
+  const p = { kind: 'pointer', action, pointerId: e.pointerId % 10, ...norm(e) };
+  staged.delete(e.pointerId);
+  phone.sendInput(p);
+}
+canvas.addEventListener('pointerup', (e) => endPointer(e, 'up'));
+canvas.addEventListener('pointercancel', (e) => endPointer(e, 'cancel'));
+
+/* ------------------------------------------------------------------ keyboard */
+canvas.addEventListener('click', () => kbd.focus({ preventScroll: true }));
+document.getElementById('btnKeyboard').addEventListener('click', () => {
+  kbd.value = '';
+  kbd.focus({ preventScroll: true });
+});
+
+let lastLen = 0;
+kbd.addEventListener('input', () => {
+  const v = kbd.value;
+  if (v.length > lastLen) {
+    const added = v.slice(lastLen);
+    if (added) phone.sendInput({ kind: 'text', text: added });
+  } else if (v.length < lastLen) {
+    const removed = lastLen - v.length;
+    for (let i = 0; i < removed; i++) phone.sendInput({ kind: 'keyevent', keycode: 67 }); // DEL
+  }
+  lastLen = v.length;
+});
+
+kbd.addEventListener('keydown', (e) => {
+  const map = { Enter: 66, Backspace: null, Escape: 4, ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22, Tab: 61 };
+  if (e.key === 'Backspace') return;           // handled by the input event above
+  if (map[e.key]) {
+    e.preventDefault();
+    phone.sendInput({ kind: 'keyevent', keycode: map[e.key] });
+    if (e.key === 'Enter') { kbd.value = ''; lastLen = 0; }
+  }
+});
+
+/* -------------------------------------------------------------------- buttons */
+const KEYS = { btnHome: 3, btnBack: 4, btnRecents: 187 };
+for (const [id, code] of Object.entries(KEYS)) {
+  document.getElementById(id).addEventListener('click', () => phone.sendInput({ kind: 'keyevent', keycode: code }));
+}
+
+document.getElementById('btnFull').addEventListener('click', async () => {
+  try {
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+    else await document.exitFullscreen();
+  } catch {}
+});
+
+document.getElementById('btnReconnect').addEventListener('click', () => {
+  phone.close();
+  phone.frames = 0;
+  phone.lastFrameAt = 0;
+  phone.connect();
+  paint('connecting');
+});
+
+ovRetry.addEventListener('click', () => {
+  phone.close();
+  phone.connect();
+  paint('connecting');
+});
+
+/* Reconnect immediately when the tab comes back or the network returns. */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && phone.state !== 'live') { phone.close(); phone.connect(); }
+});
+addEventListener('online', () => { phone.close(); phone.connect(); });
+
+/* ----------------------------------------------------------------------- boot */
+paint('connecting');
+phone.connect();
+console.info('[VEXA] phone backend:', backendUrl());
+</script>
+</body>
+</html>

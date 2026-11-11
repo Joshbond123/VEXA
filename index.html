@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VEXA — AI Agent &amp; Cloud Phone</title>
+<meta name="description" content="VEXA dashboard: submit tasks to an AI agent, schedule automations, configure models, and open a live Android cloud phone." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="./assets/app.css" />
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ───────────────── sidebar ───────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">V</div>
+      <div class="brand-text">
+        <strong>VEXA</strong>
+        <span>Agent &amp; Cloud Phone</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <a class="nav-item" href="#/dashboard" data-route="dashboard">
+        <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>
+        <span>Dashboard</span>
+      </a>
+      <a class="nav-item" href="#/automations" data-route="automations">
+        <svg viewBox="0 0 24 24"><path d="M12 8v5l4 2M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z"/></svg>
+        <span>Automations</span>
+        <em class="badge" id="navAutoCount">0</em>
+      </a>
+      <a class="nav-item" href="#/models" data-route="models">
+        <svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+        <span>AI Models</span>
+      </a>
+      <a class="nav-item" href="#/activity" data-route="activity">
+        <svg viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+        <span>Activity</span>
+      </a>
+      <a class="nav-item" href="./phone/" data-route="phone-link">
+        <svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>
+        <span>VEXA Phone</span>
+      </a>
+    </nav>
+
+    <div class="side-foot">
+      <div class="phone-chip" id="sidePhoneChip">
+        <span class="dot" id="sidePhoneDot"></span>
+        <div>
+          <strong id="sidePhoneState">Checking phone…</strong>
+          <small id="sidePhoneSession">—</small>
+        </div>
+      </div>
+      <a class="btn btn-primary btn-block" href="./phone/" id="openPhoneBtn">
+        <svg viewBox="0 0 24 24"><path d="M7 2.5h10a2.5 2.5 0 0 1 2.5 2.5v14a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 19V5A2.5 2.5 0 0 1 7 2.5z"/><path d="M11 18.5h2"/></svg>
+        Open Phone
+      </a>
+    </div>
+  </aside>
+
+  <!-- ───────────────── main ───────────────── -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="menuBtn" aria-label="Menu">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="crumb" id="crumb">Dashboard</div>
+      <div class="top-right">
+        <div class="pill" id="agentPill"><span class="dot"></span><span id="agentPillText">Agent idle</span></div>
+        <div class="pill" id="modelPill"><span class="dot"></span><span id="modelPillText">No model</span></div>
+      </div>
+    </header>
+
+    <!-- ═══════════ DASHBOARD ═══════════ -->
+    <section class="view" data-view="dashboard">
+      <div class="hero">
+        <div>
+          <h1>Command your agent</h1>
+          <p>Describe a task in plain language. The agent plans it, runs it on the connected phone and reports back.</p>
+        </div>
+        <div class="hero-stats">
+          <div class="stat"><span id="statTasks">0</span><small>Tasks run</small></div>
+          <div class="stat"><span id="statDone">0</span><small>Completed</small></div>
+          <div class="stat"><span id="statFailed">0</span><small>Failed</small></div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h2>New task</h2>
+            <span class="hint">⌘/Ctrl + Enter to run</span>
+          </div>
+          <form id="taskForm" class="task-form">
+            <textarea id="taskInput" rows="4" placeholder="e.g. Open the Play Store, search for Telegram and install it"></textarea>
+            <div class="task-actions">
+              <select id="taskTarget" class="select" title="Where should the agent run this?">
+                <option value="phone">On the phone</option>
+                <option value="computer">On the computer</option>
+              </select>
+              <button class="btn btn-primary" type="submit" id="runTaskBtn">
+                <svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg>
+                Run task
+              </button>
+            </div>
+          </form>
+          <div class="chips" id="taskSuggestions">
+            <button type="button" class="chip" data-task="Open the Play Store">Open Play Store</button>
+            <button type="button" class="chip" data-task="Open Telegram and verify it launches">Open Telegram</button>
+            <button type="button" class="chip" data-task="Press home and show the launcher">Go home</button>
+            <button type="button" class="chip" data-task="Scroll down the current screen">Scroll</button>
+          </div>
+        </div>
+
+        <div class="card live-card">
+          <div class="card-head">
+            <h2>Phone screen</h2>
+            <a class="link" href="./phone/">Open full view →</a>
+          </div>
+          <div class="mini-phone" id="miniPhone">
+            <canvas id="miniCanvas" width="288" height="640"></canvas>
+            <div class="mini-overlay" id="miniOverlay">Waiting for the phone stream…</div>
+          </div>
+          <div class="mini-meta">
+            <span id="miniSession">—</span>
+            <span id="miniFps">— fps</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Agent activity</h2>
+          <button class="btn btn-ghost btn-sm" id="clearLog">Clear</button>
+        </div>
+        <div class="log" id="dashLog"><div class="log-empty">No activity yet. Submit a task to begin.</div></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ AUTOMATIONS ═══════════ -->
+    <section class="view" data-view="automations" hidden>
+      <div class="hero compact">
+        <div>
+          <h1>Automations</h1>
+          <p>Run the agent on a schedule you set — or hand scheduling to the agent itself.</p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2 id="autoFormTitle">New automation</h2></div>
+          <form id="autoForm" class="stack">
+            <label class="field">
+              <span>Task prompt</span>
+              <textarea id="autoPrompt" rows="3" placeholder="e.g. Open Telegram and check for new messages"></textarea>
+            </label>
+
+            <label class="field">
+              <span>How often should the agent work?</span>
+              <select id="autoInterval" class="select">
+                <option value="30">Every 30 minutes</option>
+                <option value="60" selected>Every 1 hour</option>
+                <option value="120">Every 2 hours</option>
+                <option value="180">Every 3 hours</option>
+                <option value="360">Every 6 hours</option>
+                <option value="720">Every 12 hours</option>
+                <option value="custom">Custom interval…</option>
+              </select>
+            </label>
+
+            <div class="field" id="autoCustomWrap" hidden>
+              <span>Custom interval</span>
+              <div class="inline">
+                <input id="autoCustomValue" class="input" type="number" min="1" value="45" />
+                <select id="autoCustomUnit" class="select">
+                  <option value="1">minutes</option>
+                  <option value="60">hours</option>
+                  <option value="1440">days</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="switch-row">
+              <div>
+                <strong>Let the AI decide when to run next</strong>
+                <small>After each run the agent judges whether more work is needed and schedules itself. Runs independently of the interval above.</small>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="autoAiSched" />
+                <span></span>
+              </label>
+            </div>
+
+            <div class="row-end">
+              <button type="button" class="btn btn-ghost" id="autoCancel" hidden>Cancel</button>
+              <button type="submit" class="btn btn-primary" id="autoSave">Save automation</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>AI scheduling</h2>
+            <span class="tag" id="aiSchedTag">—</span>
+          </div>
+          <p class="muted">With AI scheduling enabled the agent reviews its last result, decides if more work is required, and picks its own next wake-up time. It needs a configured model in <a href="#/models" class="link">AI Models</a>; without one it falls back to a safe heuristic.</p>
+          <div class="ai-box" id="aiBox">
+            <div class="ai-row"><span>Next decision</span><strong id="aiNextDecision">—</strong></div>
+            <div class="ai-row"><span>Reason</span><strong id="aiReason">—</strong></div>
+            <div class="ai-row"><span>Next run</span><strong id="aiNextRun">—</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Scheduled work</h2><span class="tag" id="autoCountTag">0 items</span></div>
+        <div class="table-wrap">
+          <table class="table" id="autoTable">
+            <thead><tr><th>Task</th><th>Schedule</th><th>Mode</th><th>Next run</th><th>Status</th><th></th></tr></thead>
+            <tbody id="autoBody"></tbody>
+          </table>
+        </div>
+        <div class="log-empty" id="autoEmpty">No automations yet — create one on the left.</div>
+      </div>
+    </section>
+
+    <!-- ═══════════ MODELS ═══════════ -->
+    <section class="view" data-view="models" hidden>
+      <div class="hero compact">
+        <div>
+          <h1>AI models</h1>
+          <p>Bring your own keys. Keys stay in this browser (localStorage) and are never committed to the repository.</p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2>Providers</h2></div>
+          <div class="providers" id="providers"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Active model</h2></div>
+          <div class="active-model">
+            <div class="am-name" id="amName">None selected</div>
+            <div class="am-meta" id="amMeta">Add a key for a provider, then select a model.</div>
+          </div>
+          <div class="card-head"><h2>Key storage</h2></div>
+          <p class="muted small">Keys are stored with <code>localStorage</code> under <code>vexa.keys</code> and only ever sent to the provider you chose. Nothing is written to GitHub, and no key is bundled into this page.</p>
+          <button class="btn btn-ghost btn-sm" id="wipeKeys">Remove all keys</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ ACTIVITY ═══════════ -->
+    <section class="view" data-view="activity" hidden>
+      <div class="hero compact">
+        <div><h1>Activity</h1><p>Everything the agent has done in this browser.</p></div>
+        <button class="btn btn-ghost btn-sm" id="clearLog2">Clear log</button>
+      </div>
+      <div class="card"><div class="log tall" id="fullLog"><div class="log-empty">Nothing yet.</div></div></div>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script type="module" src="./assets/app.js"></script>
+</body>
+</html>
