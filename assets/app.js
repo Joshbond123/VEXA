@@ -117,6 +117,12 @@ function paintPhoneState(s) {
     if (s === 'live') overlay.hidden = true;
     else { overlay.hidden = false; overlay.textContent = meta.label; }
   }
+  const banner = $('#phoneBanner');
+  if (banner) {
+    banner.hidden = s === 'live';
+    banner.textContent = s === 'live' ? '' :
+      `The phone is not streaming right now (${meta.label.replace('…', '')}). Tasks and automations will not run until it reconnects — VEXA keeps retrying automatically.`;
+  }
 }
 
 /* ---------------------------------------------------------------- the agent */
@@ -131,8 +137,14 @@ const AGENT = {
     pushLog('info', `Task accepted: “${prompt}” (${steps.length} step${steps.length > 1 ? 's' : ''}, target: ${target})`);
     for (const step of steps) {
       onStep(step);
+      const before = phone.changeAt;
       await this.exec(step);
       pushLog('info', `  ↳ ${step.describe}`);
+      // Verify instead of assuming: an action that changed nothing means the
+      // device is wedged, and the task must say so rather than report success.
+      if (step.type !== 'wait' && phone.changeAt === before && !phone.isResponsive()) {
+        throw new Error(`The phone stopped responding after “${step.describe}”. It is recovering — please retry in a moment.`);
+      }
     }
     return steps;
   },
@@ -206,7 +218,13 @@ function plan(prompt) {
 async function submitTask(prompt, target) {
   if (state.running) { toast('A task is already running', 'bad'); return; }
   if (!prompt.trim()) return;
-  if (phone.state !== 'live') { toast('Phone is not live yet — waiting for the stream', 'bad'); }
+  // Never run a task against a dead channel and then claim it happened.
+  if (!phone.control || phone.control.readyState !== 1) {
+    pushLog('bad', 'Task refused: the phone control channel is not connected.');
+    toast('Phone control channel is offline — reconnecting', 'bad');
+    phone._openControl();
+    return;
+  }
 
   state.running = true;
   $('#runTaskBtn').disabled = true;

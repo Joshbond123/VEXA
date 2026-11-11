@@ -142,7 +142,7 @@ const phone = new PhoneLink({ canvas });
 const COPY = {
   connecting: { title: 'Connecting to your phone…', body: 'Opening the secure stream to the Android device.' },
   live:       { title: '', body: '' },
-  stalled:    { title: 'Picture stalled', body: 'The stream paused — requesting a fresh keyframe automatically.' },
+  stalled:    { title: 'Picture frozen', body: 'The device stopped producing new frames. VEXA is reconnecting and waking it automatically — this picture is the last one received, not a live view.' },
   reconnecting: { title: 'Reconnecting…', body: 'The connection dropped. Retrying automatically.' },
   offline:    { title: 'Phone offline', body: 'No emulator session is attached right now. VEXA keeps retrying — it will reconnect on its own.' },
   unsupported:{ title: 'This browser cannot decode the phone', body: 'The live picture needs H.264 WebCodecs (Chrome, Edge or Safari 16.4+).' },
@@ -170,8 +170,20 @@ phone.addEventListener('session', (e) => {
 });
 phone.addEventListener('tick', (e) => {
   metaFps.textContent = `${e.detail.fps} fps`;
+  if (phone.state === 'live' && !phone.unresponsive) overlay.hidden = true;
 });
-phone.addEventListener('frame', () => { overlay.hidden = true; });
+phone.addEventListener('frame', () => { if (phone.state === 'live') overlay.hidden = true; });
+
+/* The device accepted a tap but never changed the screen: say it plainly. */
+phone.addEventListener('unresponsive', () => {
+  statusText.textContent = 'Device not responding — retrying';
+  statusDot.className = 'dot warn live';
+  ovTitle.textContent = 'The device stopped responding';
+  ovBody.textContent = 'Your last input had no effect on screen. VEXA is waking the device and will reconnect on its own.';
+  overlay.hidden = false;
+  ovSpin.hidden = false;
+  ovRetry.hidden = false;
+});
 
 /* --------------------------------------------------------------- touch input */
 const staged = new Map();
