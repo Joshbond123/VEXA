@@ -7,12 +7,12 @@
     "intervalMinutes": 60,
     "enabled": true,
     "paused": false,
-    "status": "failed",
+    "status": "completed",
     "nextRunAt": null,
-    "lastRunAt": "2026-11-16T23:39:26.642Z",
-    "runCount": 4,
+    "lastRunAt": "2026-11-16T23:41:31.489Z",
+    "runCount": 5,
     "createdAt": "2026-11-16T19:04:24.823784Z",
-    "updatedAt": "2026-11-16T23:39:26.642Z",
-    "lastRunStatus": "failed"
+    "updatedAt": "2026-11-16T23:41:31.489Z",
+    "lastRunStatus": "completed"
   }
 ]
