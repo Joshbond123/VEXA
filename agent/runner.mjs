@@ -18,7 +18,7 @@ const EXECUTIONS_DIR = path.join(DATA_DIR, 'executions');
 const CHATS_DIR = path.join(DATA_DIR, 'chats');
 
 const NVIDIA_API_KEY = (process.env.NVIDIA_API_KEY || '').trim();
-const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'meta/llama-4-maverick-17b-128e-instruct';
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-super-vl-120b-a12b';
 const TARGET_AUTOMATION_ID = (process.env.TARGET_AUTOMATION_ID || '').trim();
 const EMULATOR_ACCESS_TOKEN = (process.env.EMULATOR_ACCESS_TOKEN || '').trim();
 
