@@ -1,5 +1,20 @@
 [
   {
+    "id": "exec_1794872364072_zg8pp",
+    "automationId": "auto_test_1",
+    "status": "failed",
+    "startedAt": "2026-11-16T23:39:24.072Z",
+    "finishedAt": "2026-11-16T23:39:26.642Z",
+    "taskReceived": "Open Settings on the Android phone, check the Android version and Wi-Fi status, and report what you observe.",
+    "actionsPerformed": [],
+    "appsInteracted": [],
+    "observedResults": "",
+    "outcomeAchieved": false,
+    "failures": "NVIDIA API error 410: {\"type\":\"about:blank\",\"title\":\"Gone\",\"status\":410,\"detail\":\"The model 'meta/llama-4-maverick-17b-128e-instruct' has reached its end of life on 2026-07-27T00:00:00Z and is no longer available.\"}\n",
+    "remainingSteps": [],
+    "nextExecutionScheduled": null
+  },
+  {
     "id": "exec_1794872328439_dr8db",
     "automationId": "auto_test_1",
     "status": "failed",
