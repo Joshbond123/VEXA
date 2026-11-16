@@ -12,5 +12,12 @@
     "executionId": "exec_1794855895237_96xn8",
     "timestamp": "2026-11-16T19:04:55.237Z",
     "content": "**Execution Report (FAILED)**\n• **Task:** Open Settings on the Android phone, check the Android version and Wi-Fi status, and report what you observe.\n• **Actions:** None\n• **Apps:** None\n• **Observed:** Could not connect to running Android emulator.\n• **Failures:** Android emulator gateway is offline (No gatewayUrl configured in data/emulator.json). Start the Android Emulator workflow first.\n• **Next Run:** None (completed/stopped)"
+  },
+  {
+    "id": "msg_1794872330660",
+    "role": "agent",
+    "executionId": "exec_1794872328439_dr8db",
+    "timestamp": "2026-11-16T23:38:50.659Z",
+    "content": "**Execution Report (FAILED)**\n• **Task:** Open Settings on the Android phone, check the Android version and Wi-Fi status, and report what you observe.\n• **Actions:** None\n• **Apps:** None\n• **Observed:** N/A\n• **Failures:** NVIDIA API error 410: {\"type\":\"about:blank\",\"title\":\"Gone\",\"status\":410,\"detail\":\"The model 'meta/llama-3.2-90b-vision-instruct' has reached its end of life on 2026-11-16T09:00:00Z and is no longer available.\"}\n\n• **Next Run:** None (completed/stopped)"
   }
 ]
