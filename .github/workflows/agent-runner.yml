@@ -1,0 +1,55 @@
+name: VEXA Autonomous Agent Runner
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      automation_id:
+        description: 'Specific automation ID to run immediately (leave blank for all due)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vexa-agent-runner
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    name: Execute Due Automations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      EMULATOR_ACCESS_TOKEN: ${{ secrets.EMULATOR_ACCESS_TOKEN }}
+      TARGET_AUTOMATION_ID: ${{ inputs.automation_id || '' }}
+    steps:
+      - name: Checkout VEXA
+        uses: actions/checkout@v4
+        with:
+          ref: vexa
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Autonomous Agent
+        run: node agent/runner.mjs
+
+      - name: Commit & Push Updated State
+        run: |
+          git config user.name "VEXA Agent"
+          git config user.email "agent@vexa.ai"
+          git add data/
+          if ! git diff --cached --quiet; then
+            git commit -m "agent: update automations, executions, and chat reports [skip ci]"
+            git pull --rebase origin vexa || true
+            git push origin vexa
+          else
+            echo "No state changes to commit."
+          fi

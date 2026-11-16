@@ -1,550 +1,509 @@
-/**
- * VEXA dashboard logic.
- *  - task submission → in-browser agent driving the live cloud phone
- *  - automations: fixed intervals + AI-decided scheduling
- *  - model/provider + key management (keys never leave this browser)
- */
-import { PhoneLink, STATES, backendUrl } from './phone-core.js';
+(() => {
+  const REPO_OWNER = 'Joshbond123';
+  const REPO_NAME = 'VEXA';
+  const REPO_BRANCH = 'vexa';
 
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const state = {
+    automations: [],
+    emulator: { gatewayUrl: '', status: 'offline' },
+    activeAutoId: null,
+    chats: {},
+    executions: {},
+    settings: {
+      gatewayUrl: localStorage.getItem('vexa.gatewayUrl') || '',
+      githubPat: localStorage.getItem('vexa.githubPat') || '',
+      nvidiaKey: localStorage.getItem('vexa.nvidiaKey') || '',
+    },
+    streamTimer: null,
+    pointerDown: null,
+  };
 
-/* ------------------------------------------------------------------ storage */
-const store = {
-  get(key, fallback) {
-    try { const v = localStorage.getItem(`vexa.${key}`); return v ? JSON.parse(v) : fallback; }
-    catch { return fallback; }
-  },
-  set(key, val) { try { localStorage.setItem(`vexa.${key}`, JSON.stringify(val)); } catch {} },
-};
+  const $ = (id) => document.getElementById(id);
 
-const state = {
-  tasks: store.get('tasks', []),
-  automations: store.get('automations', []),
-  log: store.get('log', []),
-  keys: store.get('keys', {}),
-  activeModel: store.get('activeModel', null),
-  editing: null,
-  running: false,
-};
-
-const PROVIDERS = [
-  {
-    id: 'xai', name: 'xAI · Grok', endpoint: 'https://api.x.ai/v1/chat/completions',
-    models: ['grok-4', 'grok-3', 'grok-3-mini', 'grok-2-1212'], keyHint: 'xAI API key',
-  },
-  {
-    id: 'nvidia', name: 'NVIDIA · Nemotron', endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
-    models: ['nvidia/llama-3.1-nemotron-ultra-253b-v1', 'nvidia/llama-3.3-nemotron-super-49b-v1', 'nvidia/nemotron-4-340b-instruct'],
-    keyHint: 'NVIDIA API key',
-  },
-  {
-    id: 'openai', name: 'OpenAI', endpoint: 'https://api.openai.com/v1/chat/completions',
-    models: ['gpt-4o', 'gpt-4o-mini', 'o4-mini'], keyHint: 'OpenAI API key',
-  },
-  {
-    id: 'custom', name: 'Custom (OpenAI-compatible)', endpoint: '', models: ['custom-model'], keyHint: 'your key',
-  },
-];
-
-/* --------------------------------------------------------------------- log */
-function pushLog(kind, message) {
-  const entry = { at: Date.now(), kind, message };
-  state.log.push(entry);
-  if (state.log.length > 400) state.log.shift();
-  store.set('log', state.log);
-  renderLog();
-}
-
-function renderLog() {
-  for (const sel of ['#dashLog', '#fullLog']) {
-    const box = $(sel);
-    if (!box) continue;
-    if (!state.log.length) { box.innerHTML = '<div class="log-empty">No activity yet. Submit a task to begin.</div>'; continue; }
-    box.innerHTML = state.log.slice(-120).reverse().map((e) => `
-      <div class="log-row ${e.kind}">
-        <span class="t">${new Date(e.at).toLocaleTimeString()}</span>
-        <span class="m">${escapeHtml(e.message)}</span>
-      </div>`).join('');
-  }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function toast(message, tone = '') {
-  const el = document.createElement('div');
-  el.className = `toast ${tone}`;
-  el.textContent = message;
-  $('#toasts').appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; }, 2600);
-  setTimeout(() => el.remove(), 3100);
-}
-
-/* ------------------------------------------------------------------ routing */
-const ROUTES = ['dashboard', 'automations', 'models', 'activity'];
-function route() {
-  let r = (location.hash || '#/dashboard').replace('#/', '');
-  if (!ROUTES.includes(r)) r = 'dashboard';
-  $$('.view').forEach((v) => { v.hidden = v.dataset.view !== r; });
-  $$('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.route === r));
-  $('#crumb').textContent = { dashboard: 'Dashboard', automations: 'Automations', models: 'AI Models', activity: 'Activity' }[r];
-  $('#sidebar').classList.remove('open');
-}
-addEventListener('hashchange', route);
-
-/* ------------------------------------------------------------- phone link */
-const phone = new PhoneLink({ canvas: $('#miniCanvas') });
-phone.addEventListener('state', (e) => paintPhoneState(e.detail));
-phone.addEventListener('session', (e) => {
-  const id = e.detail.sessionId;
-  $('#miniSession').textContent = id || 'no session';
-  $('#sidePhoneSession').textContent = id ? id.split('_').slice(-1)[0] : '—';
-  $('#sidePhoneState').textContent = id ? 'Phone connected' : 'Phone offline';
-  $('#sidePhoneDot').className = `dot ${id ? 'ok live' : 'bad'}`;
-});
-phone.addEventListener('tick', (e) => { $('#miniFps').textContent = `${e.detail.fps} fps`; });
-phone.addEventListener('frame', () => { $('#miniOverlay').hidden = true; });
-
-function paintPhoneState(s) {
-  const meta = STATES[s] || STATES.connecting;
-  const overlay = $('#miniPhone .mini-overlay');
-  $('#sidePhoneState').textContent = meta.label.replace('…', '');
-  $('#sidePhoneDot').className = `dot ${meta.tone}${s === 'live' ? ' live' : ''}`;
-  // Never show a stale picture while the stream is not live: an overlay says it plainly.
-  if (overlay) {
-    if (s === 'live') overlay.hidden = true;
-    else { overlay.hidden = false; overlay.textContent = meta.label; }
-  }
-  const banner = $('#phoneBanner');
-  if (banner) {
-    banner.hidden = s === 'live';
-    banner.textContent = s === 'live' ? '' :
-      `The phone is not streaming right now (${meta.label.replace('…', '')}). Tasks and automations will not run until it reconnects — VEXA keeps retrying automatically.`;
-  }
-}
-
-/* ---------------------------------------------------------------- the agent */
-/**
- * VEXA agent: turns a plain-language task into real actions on the cloud phone.
- * Every action is a real input event sent to the device — no simulated UI.
- */
-const AGENT = {
-  async run(prompt, { target = 'phone', onStep = () => {} } = {}) {
-    const steps = plan(prompt);
-    if (!steps.length) throw new Error('I could not turn that into actions. Try: "open Telegram", "scroll down", "type hello".');
-    pushLog('info', `Task accepted: “${prompt}” (${steps.length} step${steps.length > 1 ? 's' : ''}, target: ${target})`);
-    for (const step of steps) {
-      onStep(step);
-      const before = phone.changeAt;
-      await this.exec(step);
-      pushLog('info', `  ↳ ${step.describe}`);
-      // Verify instead of assuming: an action that changed nothing means the
-      // device is wedged, and the task must say so rather than report success.
-      if (step.type !== 'wait' && phone.changeAt === before && !phone.isResponsive()) {
-        throw new Error(`The phone stopped responding after “${step.describe}”. It is recovering — please retry in a moment.`);
-      }
-    }
-    return steps;
-  },
-
-  async exec(step) {
-    switch (step.type) {
-      case 'home': phone.sendInput({ kind: 'keyevent', keycode: 3 }); await wait(900); break;
-      case 'back': phone.sendInput({ kind: 'keyevent', keycode: 4 }); await wait(700); break;
-      case 'recents': phone.sendInput({ kind: 'keyevent', keycode: 187 }); await wait(900); break;
-      case 'wait': await wait(step.ms); break;
-      case 'type':
-        phone.sendInput({ kind: 'text', text: step.text }); await wait(700); break;
-      case 'tap':
-        phone.sendInput({ kind: 'pointer', action: 'down', pointerId: 0, x: step.x, y: step.y, landscape: false });
-        await wait(60);
-        phone.sendInput({ kind: 'pointer', action: 'up', pointerId: 0, x: step.x, y: step.y, landscape: false });
-        await wait(900); break;
-      case 'swipe':
-        phone.sendInput({ kind: 'pointer', action: 'down', pointerId: 0, x: step.x1, y: step.y1, landscape: false });
-        for (let t = 1; t <= 6; t++) {
-          phone.sendInput({ kind: 'pointer', action: 'move', pointerId: 0,
-            x: step.x1 + (step.x2 - step.x1) * t / 6, y: step.y1 + (step.y2 - step.y1) * t / 6, landscape: false });
-          await wait(28);
-        }
-        phone.sendInput({ kind: 'pointer', action: 'up', pointerId: 0, x: step.x2, y: step.y2, landscape: false });
-        await wait(step.settle ?? 1100); break;
-      case 'openApp':
-        // Launcher search is the most reliable touch-only way to launch an app:
-        // HOME → open the app drawer → type the name → tap the first result.
-        await this.exec({ type: 'home' });
-        await this.exec({ type: 'swipe', x1: 0.5, y1: 0.94, x2: 0.5, y2: 0.34, settle: 1400 });
-        await this.exec({ type: 'tap', x: 0.5, y: 0.055 });          // search field
-        await wait(500);
-        await this.exec({ type: 'type', text: step.app });
-        await wait(1600);
-        await this.exec({ type: 'tap', x: 0.5, y: 0.2 });            // first result row
-        await wait(2600);
-        break;
-      default: break;
-    }
-  },
-};
-
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/** Very small intent parser — deterministic and inspectable. */
-function plan(prompt) {
-  const p = prompt.toLowerCase().trim();
-  const steps = [];
-
-  const openMatch = p.match(/(?:open|launch|start|go to)\s+(?:the\s+)?([a-z0-9 .+'-]+?)(?:\s+(?:app|application|and|then|,|\.|$))/);
-  if (openMatch) {
-    const app = openMatch[1].replace(/\s+app$/, '').trim();
-    steps.push({ type: 'openApp', app, describe: `Open ${app} from the launcher` });
-  }
-  if (/\b(go\s+)?home\b/.test(p)) steps.push({ type: 'home', describe: 'Press Home' });
-  if (/\b(go\s+)?back\b/.test(p)) steps.push({ type: 'back', describe: 'Press Back' });
-  if (/\brecents?\b/.test(p)) steps.push({ type: 'recents', describe: 'Open Recents' });
-  if (/\bscroll\s+down\b/.test(p)) steps.push({ type: 'swipe', x1: 0.5, y1: 0.78, x2: 0.5, y2: 0.3, describe: 'Scroll down' });
-  if (/\bscroll\s+up\b/.test(p)) steps.push({ type: 'swipe', x1: 0.5, y1: 0.3, x2: 0.5, y2: 0.78, describe: 'Scroll up' });
-  const typeMatch = prompt.match(/type\s+["“']?([^"”']+)["”']?\s*$/i);
-  if (typeMatch && !openMatch) steps.push({ type: 'type', text: typeMatch[1].trim(), describe: `Type “${typeMatch[1].trim()}”` });
-  const tapMatch = p.match(/tap\s+(\d{1,3})%?\s*[, ]\s*(\d{1,3})%?/);
-  if (tapMatch) steps.push({ type: 'tap', x: +tapMatch[1] / 100, y: +tapMatch[2] / 100, describe: `Tap ${tapMatch[1]}%, ${tapMatch[2]}%` });
-
-  if (!steps.length && /\bwait\b/.test(p)) steps.push({ type: 'wait', ms: 2000, describe: 'Wait' });
-  return steps;
-}
-
-/* ------------------------------------------------------------------- tasks */
-async function submitTask(prompt, target) {
-  if (state.running) { toast('A task is already running', 'bad'); return; }
-  if (!prompt.trim()) return;
-  // Never run a task against a dead channel and then claim it happened.
-  if (!phone.control || phone.control.readyState !== 1) {
-    pushLog('bad', 'Task refused: the phone control channel is not connected.');
-    toast('Phone control channel is offline — reconnecting', 'bad');
-    phone._openControl();
-    return;
-  }
-
-  state.running = true;
-  $('#runTaskBtn').disabled = true;
-  $('#agentPillText').textContent = 'Agent working…';
-  $('#agentPill .dot').className = 'dot warn live';
-
-  const task = { id: crypto.randomUUID(), prompt, target, startedAt: Date.now(), status: 'running', steps: [] };
-  state.tasks.unshift(task);
-  store.set('tasks', state.tasks);
-  renderStats();
-
-  try {
-    if (target === 'computer') {
-      // VEXA's connected computer IS the cloud phone. Anything that must happen on a
-      // desktop needs the optional desktop bridge, which is not connected here.
-      throw new Error('No desktop bridge connected. In VEXA the agent executes on the cloud phone — choose “On the phone”.');
-    }
-    await AGENT.run(prompt, { target, onStep: (s) => { task.steps.push(s.describe); store.set('tasks', state.tasks); } });
-    task.status = 'done';
-    task.finishedAt = Date.now();
-    pushLog('ok', `Task complete: “${prompt}”`);
-    toast('Task complete', 'ok');
-  } catch (err) {
-    task.status = 'failed';
-    task.error = err.message;
-    task.finishedAt = Date.now();
-    pushLog('bad', `Task failed: ${err.message}`);
-    toast(err.message, 'bad');
-  } finally {
-    state.running = false;
-    $('#runTaskBtn').disabled = false;
-    $('#agentPillText').textContent = 'Agent idle';
-    $('#agentPill .dot').className = 'dot ok';
-    store.set('tasks', state.tasks);
-    renderStats();
-  }
-}
-
-function renderStats() {
-  $('#statTasks').textContent = state.tasks.length;
-  $('#statDone').textContent = state.tasks.filter((t) => t.status === 'done').length;
-  $('#statFailed').textContent = state.tasks.filter((t) => t.status === 'failed').length;
-}
-
-/* -------------------------------------------------------------- automations */
-function intervalMinutes(auto) {
-  if (auto.mode === 'custom') return Math.max(1, Number(auto.customValue) * Number(auto.customUnit));
-  return Math.max(1, Number(auto.intervalMin));
-}
-
-function renderAutomations() {
-  const body = $('#autoBody');
-  const list = state.automations;
-  $('#autoCountTag').textContent = `${list.length} item${list.length === 1 ? '' : 's'}`;
-  $('#navAutoCount').textContent = list.length;
-  $('#autoEmpty').hidden = list.length > 0;
-  body.innerHTML = list.map((a) => `
-    <tr>
-      <td class="t-task"><strong title="${escapeHtml(a.prompt)}">${escapeHtml(a.prompt)}</strong>
-        <small>${a.lastRun ? 'last run ' + new Date(a.lastRun).toLocaleTimeString() : 'never run'}</small></td>
-      <td>${a.aiSched ? 'AI decides' : `every ${intervalMinutes(a)} min`}</td>
-      <td>${a.aiSched ? '<span class="state active">AI-scheduled</span>' : '<span class="state">Fixed</span>'}</td>
-      <td>${a.enabled && a.nextRun ? new Date(a.nextRun).toLocaleString() : '—'}</td>
-      <td><span class="state ${a.enabled ? 'active' : 'paused'}">${a.enabled ? 'Active' : 'Paused'}</span></td>
-      <td class="row-actions">
-        <button class="btn btn-ghost btn-sm" data-act="toggle" data-id="${a.id}">${a.enabled ? 'Pause' : 'Resume'}</button>
-        <button class="btn btn-ghost btn-sm" data-act="run" data-id="${a.id}">Run now</button>
-        <button class="btn btn-ghost btn-sm" data-act="edit" data-id="${a.id}">Edit</button>
-        <button class="btn btn-ghost btn-sm" data-act="del" data-id="${a.id}">Delete</button>
-      </td>
-    </tr>`).join('');
-}
-
-$('#autoBody')?.addEventListener('click', async (e) => {
-  const btn = e.target.closest('button[data-act]');
-  if (!btn) return;
-  const auto = state.automations.find((a) => a.id === btn.dataset.id);
-  if (!auto) return;
-  if (btn.dataset.act === 'toggle') {
-    auto.enabled = !auto.enabled;
-    auto.nextRun = auto.enabled ? nextRunFor(auto) : null;
-    persistAutomations();
-  } else if (btn.dataset.act === 'del') {
-    state.automations = state.automations.filter((a) => a.id !== auto.id);
-    persistAutomations();
-    toast('Automation deleted');
-  } else if (btn.dataset.act === 'run') {
-    await runAutomation(auto, true);
-  } else if (btn.dataset.act === 'edit') {
-    state.editing = auto.id;
-    $('#autoFormTitle').textContent = 'Edit automation';
-    $('#autoPrompt').value = auto.prompt;
-    if (auto.mode === 'custom') {
-      $('#autoInterval').value = 'custom';
-      $('#autoCustomWrap').hidden = false;
-      $('#autoCustomValue').value = auto.customValue;
-      $('#autoCustomUnit').value = auto.customUnit;
-    } else {
-      $('#autoInterval').value = String(auto.intervalMin);
-      $('#autoCustomWrap').hidden = true;
-    }
-    $('#autoAiSched').checked = !!auto.aiSched;
-    $('#autoCancel').hidden = false;
-    $('#autoPrompt').focus();
-  }
-});
-
-function persistAutomations() {
-  store.set('automations', state.automations);
-  renderAutomations();
-}
-
-function nextRunFor(auto) {
-  return Date.now() + intervalMinutes(auto) * 60000;
-}
-
-$('#autoInterval')?.addEventListener('change', (e) => {
-  $('#autoCustomWrap').hidden = e.target.value !== 'custom';
-});
-
-$('#autoCancel')?.addEventListener('click', () => {
-  state.editing = null;
-  $('#autoFormTitle').textContent = 'New automation';
-  $('#autoForm').reset();
-  $('#autoCustomWrap').hidden = true;
-  $('#autoCancel').hidden = true;
-});
-
-$('#autoForm')?.addEventListener('submit', (e) => {
-  e.preventDefault();
-  const prompt = $('#autoPrompt').value.trim();
-  if (!prompt) { toast('Add a task prompt', 'bad'); return; }
-  const sel = $('#autoInterval').value;
-  const auto = state.editing
-    ? state.automations.find((a) => a.id === state.editing)
-    : { id: crypto.randomUUID(), enabled: true, lastRun: null };
-  auto.prompt = prompt;
-  auto.mode = sel === 'custom' ? 'custom' : 'fixed';
-  auto.intervalMin = sel === 'custom' ? Number($('#autoCustomValue').value) : Number(sel);
-  auto.customValue = Number($('#autoCustomValue').value) || 45;
-  auto.customUnit = Number($('#autoCustomUnit').value) || 1;
-  auto.aiSched = $('#autoAiSched').checked;
-  auto.nextRun = nextRunFor(auto);
-  if (!state.editing) state.automations.push(auto);
-  state.editing = null;
-  persistAutomations();
-  $('#autoForm').reset();
-  $('#autoCancel').hidden = true;
-  $('#autoFormTitle').textContent = 'New automation';
-  toast('Automation saved', 'ok');
-  pushLog('ok', `Automation saved: “${prompt}” (${auto.aiSched ? 'AI-scheduled' : 'every ' + intervalMinutes(auto) + ' min'})`);
-});
-
-async function runAutomation(auto, manual = false) {
-  if (state.running) return;
-  pushLog('info', `Automation firing: “${auto.prompt}”${manual ? ' (manual)' : ''}`);
-  await submitTask(auto.prompt, 'phone');
-  auto.lastRun = Date.now();
-  const decision = await decideNextRun(auto);
-  auto.nextRun = Date.now() + decision.minutes * 60000;
-  auto.aiReason = decision.reason;
-  auto.aiDecided = decision.by === 'ai';
-  persistAutomations();
-  $('#aiNextDecision').textContent = `${decision.minutes} min`;
-  $('#aiReason').textContent = decision.reason;
-  $('#aiNextRun').textContent = new Date(auto.nextRun).toLocaleString();
-  $('#aiSchedTag').textContent = decision.by === 'ai' ? 'model' : 'heuristic';
-}
-
-/**
- * AI-controlled scheduling: ask the model whether more work is needed and when to
- * resume. Falls back to a transparent heuristic when no model is configured.
- */
-async function decideNextRun(auto) {
-  const model = activeModelConfig();
-  if (auto.aiSched && model) {
+  // --- GitHub Repo Storage Helpers ---
+  async function ghReadJson(path, fallback) {
     try {
-      const answer = await callModel(model, [
-        { role: 'system', content: 'You schedule an automation. Reply with STRICT JSON only: {"more":true|false,"minutes":<integer 5-1440>,"reason":"<short>"}.' },
-        { role: 'user', content: `Task: ${auto.prompt}\nLast run finished at ${new Date().toISOString()}.\nLast result: ${state.tasks[0]?.status || 'unknown'}.\nShould the agent continue, and when should it next run?` },
-      ]);
-      const j = JSON.parse(answer.replace(/```json|```/g, '').trim());
-      return { minutes: Math.min(1440, Math.max(5, Math.round(j.minutes) || 60)), reason: j.reason || 'model decision', by: 'ai' };
+      const url = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/${path}?t=${Date.now()}`;
+      const res = await fetch(url);
+      if (!res.ok) return fallback;
+      return await res.json();
+    } catch {
+      return fallback;
+    }
+  }
+
+  async function ghWriteJson(path, data, message) {
+    const pat = state.settings.githubPat;
+    if (!pat) {
+      alert('Please configure your GitHub PAT in Settings & Secrets to persist changes.');
+      return false;
+    }
+    const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${path}`;
+    const headers = {
+      Authorization: `Bearer ${pat}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+    };
+
+    let sha = undefined;
+    const getRes = await fetch(`${apiUrl}?ref=${REPO_BRANCH}`, { headers });
+    if (getRes.ok) {
+      const meta = await getRes.json();
+      sha = meta.sha;
+    }
+
+    const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2) + '\n')));
+    const putRes = await fetch(apiUrl, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        message: message || `vexa: update ${path}`,
+        content,
+        branch: REPO_BRANCH,
+        ...(sha ? { sha } : {}),
+      }),
+    });
+
+    if (!putRes.ok) {
+      const err = await putRes.text();
+      console.error('GitHub write failed:', err);
+      alert(`Failed to save ${path} to GitHub: ${putRes.status}`);
+      return false;
+    }
+    return true;
+  }
+
+  async function dispatchWorkflow(workflowFile, inputs = {}) {
+    const pat = state.settings.githubPat;
+    if (!pat) {
+      alert('Please configure your GitHub PAT in Settings & Secrets to trigger workflows.');
+      return false;
+    }
+    const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${workflowFile}/dispatches`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${pat}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ref: REPO_BRANCH, inputs }),
+    });
+    if (!res.ok) {
+      alert(`Workflow dispatch failed (${res.status}). Ensure PAT has workflow scope.`);
+      return false;
+    }
+    return true;
+  }
+
+  // --- Sync & Render ---
+  async function syncAll() {
+    const [autos, emu] = await Promise.all([
+      ghReadJson('data/automations.json', []),
+      ghReadJson('data/emulator.json', { gatewayUrl: '', status: 'offline' }),
+    ]);
+    state.automations = Array.isArray(autos) ? autos : [];
+    state.emulator = emu || { gatewayUrl: '', status: 'offline' };
+
+    if (!state.activeAutoId && state.automations.length) {
+      state.activeAutoId = state.automations[0].id;
+    }
+
+    $('autoCountBadge').textContent = state.automations.length;
+    renderAutomations();
+    renderChatSelector();
+    if (state.activeAutoId) {
+      await loadAutomationDetails(state.activeAutoId);
+    }
+    checkEmulatorHealth();
+  }
+
+  async function loadAutomationDetails(autoId) {
+    const [chat, execs] = await Promise.all([
+      ghReadJson(`data/chats/${autoId}.json`, []),
+      ghReadJson(`data/executions/${autoId}.json`, []),
+    ]);
+    state.chats[autoId] = chat;
+    state.executions[autoId] = execs;
+    renderChat();
+    renderReports();
+  }
+
+  // --- Live Emulator Streaming & Controls ---
+  function getGatewayUrl() {
+    return (state.settings.gatewayUrl || state.emulator.gatewayUrl || '').trim().replace(/\/$/, '');
+  }
+
+  async function checkEmulatorHealth() {
+    const gw = getGatewayUrl();
+    const setStatus = (online, text) => {
+      const cls = `status-pill ${online ? 'online' : 'offline'}`;
+      $('sidebarEmuStatus').className = cls;
+      $('sidebarEmuStatus').textContent = online ? 'Online' : 'Offline';
+      $('mobileStatusPill').className = cls;
+      $('mobileStatusPill').textContent = online ? 'Online' : 'Offline';
+      $('sidebarEmuMeta').textContent = text;
+      $('phoneOfflineOverlay').classList.toggle('hidden', online);
+    };
+
+    if (!gw) {
+      setStatus(false, 'No gateway URL configured');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${gw}/api/public/health`, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setStatus(true, `${data.deviceModel || 'Android'} • ${gw.replace(/^https?:\/\//, '')}`);
+      startScreenPolling(gw);
     } catch (err) {
-      pushLog('bad', `AI scheduling fell back to heuristic: ${err.message}`);
+      setStatus(false, `Unreachable (${err.message})`);
+      $('phoneOfflineReason').textContent = `Gateway ${gw} is offline or starting. Click Start Emulator to boot via GitHub Actions.`;
     }
   }
-  const last = state.tasks[0];
-  const failed = last && last.status === 'failed';
-  const minutes = auto.aiSched ? (failed ? 15 : 60) : intervalMinutes(auto);
-  return { minutes, reason: auto.aiSched ? (failed ? 'last run failed — retry sooner' : 'similar work is not due yet') : 'fixed interval', by: 'heuristic' };
-}
 
-setInterval(async () => {
-  if (state.running) return;
-  const due = state.automations.find((a) => a.enabled && a.nextRun && Date.now() >= a.nextRun);
-  if (due) await runAutomation(due);
-}, 15000);
+  function startScreenPolling(gw) {
+    if (state.streamTimer) clearInterval(state.streamTimer);
+    const canvas = $('phoneCanvas');
+    const ctx = canvas.getContext('2d');
 
-/* ------------------------------------------------------------------- models */
-function activeModelConfig() {
-  if (!state.activeModel) return null;
-  const { provider, model } = state.activeModel;
-  const key = state.keys[provider];
-  const prov = PROVIDERS.find((p) => p.id === provider);
-  if (!key || !prov) return null;
-  return { provider, model, key, endpoint: prov.endpoint };
-}
+    const pullFrame = async () => {
+      try {
+        const res = await fetch(`${gw}/api/public/screenshot?t=${Date.now()}`, { signal: AbortSignal.timeout(4000) });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        const img = await createImageBitmap(blob);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        img.close();
+      } catch {}
+    };
 
-async function callModel(cfg, messages) {
-  if (!cfg.endpoint) throw new Error('Custom provider has no endpoint configured');
-  const res = await fetch(cfg.endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
-    body: JSON.stringify({ model: cfg.model, messages, temperature: 0.2, max_tokens: 300 }),
-  });
-  if (!res.ok) throw new Error(`model HTTP ${res.status}`);
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? '';
-}
+    pullFrame();
+    state.streamTimer = setInterval(pullFrame, 1000);
+  }
 
-function renderProviders() {
-  const wrap = $('#providers');
-  wrap.innerHTML = PROVIDERS.map((p) => {
-    const hasKey = Boolean(state.keys[p.id]);
-    const isActive = state.activeModel?.provider === p.id;
-    const modelList = p.models.map((m) => `<option value="${m}" ${state.activeModel?.provider === p.id && state.activeModel.model === m ? 'selected' : ''}>${m}</option>`).join('');
-    return `
-      <div class="provider ${isActive ? 'active' : ''}" data-provider="${p.id}">
-        <div class="provider-head">
-          <strong>${p.name}</strong>
-          <span class="state ${hasKey ? 'active' : ''}">${hasKey ? 'key saved' : 'no key'}</span>
+  async function sendPhoneAction(action, payload = {}) {
+    const gw = getGatewayUrl();
+    if (!gw) return;
+    try {
+      await fetch(`${gw}/api/agent/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload }),
+      });
+    } catch (err) {
+      console.error('Phone action failed:', err);
+    }
+  }
+
+  function setupPhoneInteraction() {
+    const stage = $('phoneStage');
+    const canvas = $('phoneCanvas');
+
+    const toDeviceCoords = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.round(((e.clientX - rect.left) / rect.width) * 1080);
+      const y = Math.round(((e.clientY - rect.top) / rect.height) * 2400);
+      return { x: Math.max(0, Math.min(1080, x)), y: Math.max(0, Math.min(2400, y)) };
+    };
+
+    stage.addEventListener('pointerdown', (e) => {
+      state.pointerDown = { ...toDeviceCoords(e), t: Date.now() };
+    });
+
+    stage.addEventListener('pointerup', (e) => {
+      if (!state.pointerDown) return;
+      const end = toDeviceCoords(e);
+      const dx = Math.abs(end.x - state.pointerDown.x);
+      const dy = Math.abs(end.y - state.pointerDown.y);
+      if (dx < 20 && dy < 20) {
+        sendPhoneAction('tap', { x: end.x, y: end.y });
+      } else {
+        sendPhoneAction('swipe', { x: state.pointerDown.x, y: state.pointerDown.y, x2: end.x, y2: end.y });
+      }
+      state.pointerDown = null;
+    });
+
+    document.querySelectorAll('.nav-keys button[data-key]').forEach((btn) => {
+      btn.addEventListener('click', () => sendPhoneAction('key', { keycode: Number(btn.dataset.key) }));
+    });
+
+    $('scrollDownBtn').addEventListener('click', () => sendPhoneAction('swipe', { x: 540, y: 1700, x2: 540, y2: 700 }));
+    $('scrollUpBtn').addEventListener('click', () => sendPhoneAction('swipe', { x: 540, y: 700, x2: 540, y2: 1700 }));
+
+    $('manualTypeForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = $('manualTypeInput');
+      if (!input.value.trim()) return;
+      sendPhoneAction('type', { text: input.value });
+      input.value = '';
+    });
+
+    $('expandPhoneBtn').addEventListener('click', () => {
+      stage.classList.toggle('expanded');
+      $('expandPhoneBtn').textContent = stage.classList.contains('expanded') ? '✕ Close' : '⤢ Expand';
+    });
+  }
+
+  // --- Automations UI ---
+  function renderAutomations() {
+    const list = $('automationsList');
+    if (!state.automations.length) {
+      list.innerHTML = `<div class="card" style="padding:24px;grid-column:1/-1;text-align:center;color:var(--muted)">No automations yet. Click <strong>+ Create Automation</strong> to get started.</div>`;
+      return;
+    }
+
+    list.innerHTML = state.automations.map((a) => `
+      <div class="auto-card">
+        <div class="auto-card-top">
+          <h3>${escapeHtml(a.name)}</h3>
+          <span class="status-pill ${a.status || 'idle'}">${a.status || 'idle'}</span>
         </div>
-        <input class="input" type="password" placeholder="${p.keyHint}" data-key="${p.id}"
-               value="${hasKey ? '••••••••••••' : ''}" autocomplete="off" />
-        ${p.id === 'custom' ? `<input class="input" placeholder="https://your-endpoint/v1/chat/completions" data-endpoint="${p.id}" value="${escapeHtml(p.endpoint || '')}" />` : ''}
-        <div class="provider-foot">
-          <select class="select" data-model="${p.id}">${modelList}</select>
-          <button class="btn btn-sm" data-save="${p.id}">Save key</button>
-          <button class="btn btn-primary btn-sm" data-use="${p.id}">Use model</button>
+        <p>${escapeHtml(a.instructions)}</p>
+        <div class="auto-meta">
+          Schedule: ${a.scheduleType === 'once' ? 'Run Once' : a.scheduleType === 'ai_decided' ? 'AI-Decided' : `Every ${a.intervalMinutes}m`}
+          • Runs: ${a.runCount || 0}
+          ${a.nextRunAt ? `<br>Next: ${new Date(a.nextRunAt).toLocaleString()}` : ''}
         </div>
-      </div>`;
-  }).join('');
-
-  const active = state.activeModel;
-  $('#amName').textContent = active ? `${PROVIDERS.find((p) => p.id === active.provider)?.name} · ${active.model}` : 'None selected';
-  $('#amMeta').textContent = active ? 'Used for AI-controlled scheduling and agent planning.' : 'Add a key for a provider, then select a model.';
-  $('#modelPillText').textContent = active ? active.model.split('/').pop() : 'No model';
-  $('#modelPill .dot').className = `dot ${active && state.keys[active.provider] ? 'ok' : ''}`;
-}
-
-$('#providers')?.addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-save],button[data-use]');
-  if (!btn) return;
-  const id = btn.dataset.save || btn.dataset.use;
-  const provider = PROVIDERS.find((p) => p.id === id);
-  if (btn.dataset.save) {
-    const input = $(`input[data-key="${id}"]`);
-    const value = input.value.trim();
-    if (value && !value.startsWith('••')) {
-      state.keys[id] = value;
-      store.set('keys', state.keys);
-      toast(`${provider.name} key saved in this browser`, 'ok');
-      pushLog('ok', `${provider.name} API key saved locally`);
-    }
-    if (id === 'custom') {
-      const ep = $(`input[data-endpoint="${id}"]`).value.trim();
-      provider.endpoint = ep;
-      store.set('customEndpoint', ep);
-    }
-    renderProviders();
+        <div class="auto-actions">
+          <button class="btn btn-primary btn-sm" onclick="window.__vexa.runNow('${a.id}')">▶ Run</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.__vexa.openChat('${a.id}')">💬 Chat</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.__vexa.togglePause('${a.id}')">${a.paused ? '▶ Resume' : '⏸ Pause'}</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.__vexa.editAuto('${a.id}')">✎ Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="window.__vexa.deleteAuto('${a.id}')">🗑</button>
+        </div>
+      </div>
+    `).join('');
   }
-  if (btn.dataset.use) {
-    if (!state.keys[id]) { toast('Save a key for this provider first', 'bad'); return; }
-    const model = $(`select[data-model="${id}"]`).value;
-    state.activeModel = { provider: id, model };
-    store.set('activeModel', state.activeModel);
-    renderProviders();
-    toast(`Active model: ${model}`, 'ok');
-    pushLog('ok', `Active model set to ${provider.name} · ${model}`);
+
+  function renderChatSelector() {
+    const sel = $('chatAutoSelect');
+    sel.innerHTML = state.automations.length
+      ? state.automations.map((a) => `<option value="${a.id}" ${a.id === state.activeAutoId ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')
+      : '<option value="">No automations</option>';
+    const active = state.automations.find((a) => a.id === state.activeAutoId);
+    $('chatAutoStatus').className = `status-pill ${active?.status || 'idle'}`;
+    $('chatAutoStatus').textContent = active?.status || 'idle';
   }
-});
 
-$('#wipeKeys')?.addEventListener('click', () => {
-  state.keys = {};
-  state.activeModel = null;
-  store.set('keys', {});
-  store.set('activeModel', null);
-  renderProviders();
-  toast('All keys removed');
-});
+  function renderChat() {
+    const box = $('chatMessages');
+    const msgs = state.chats[state.activeAutoId] || [];
+    if (!msgs.length) {
+      box.innerHTML = '<div class="chat-empty">No messages yet. Send instructions or click Run Now to start.</div>';
+      return;
+    }
+    box.innerHTML = msgs.map((m) => `
+      <div class="chat-msg ${m.role}">
+        <div>${escapeHtml(m.content)}</div>
+        <div class="chat-msg-meta">${new Date(m.timestamp).toLocaleTimeString()}</div>
+      </div>
+    `).join('');
+    box.scrollTop = box.scrollHeight;
+  }
 
-/* -------------------------------------------------------------------- wires */
-$('#taskForm')?.addEventListener('submit', (e) => {
-  e.preventDefault();
-  submitTask($('#taskInput').value, $('#taskTarget').value);
-  $('#taskInput').value = '';
-});
-$('#taskInput')?.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submitTask($('#taskInput').value, $('#taskTarget').value); }
-});
-$('#taskSuggestions')?.addEventListener('click', (e) => {
-  const chip = e.target.closest('.chip');
-  if (chip) $('#taskInput').value = chip.dataset.task;
-});
-$('#clearLog')?.addEventListener('click', () => { state.log = []; store.set('log', []); renderLog(); });
-$('#clearLog2')?.addEventListener('click', () => { state.log = []; store.set('log', []); renderLog(); });
-$('#menuBtn')?.addEventListener('click', () => $('#app .sidebar').classList.toggle('open'));
+  function renderReports() {
+    const list = $('reportsList');
+    const allExecs = Object.values(state.executions).flat().sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+    if (!allExecs.length) {
+      list.innerHTML = '<div class="card" style="padding:24px;color:var(--muted)">No execution reports recorded yet.</div>';
+      return;
+    }
+    list.innerHTML = allExecs.map((r) => `
+      <div class="report-card">
+        <div class="auto-card-top">
+          <strong>${escapeHtml(r.taskReceived)}</strong>
+          <span class="status-pill ${r.status}">${r.status}</span>
+        </div>
+        <div class="auto-meta" style="margin:6px 0">${new Date(r.startedAt).toLocaleString()} • Apps: ${(r.appsInteracted || []).join(', ') || 'None'}</div>
+        <p style="font-size:0.86rem;margin-top:6px"><strong>Observed:</strong> ${escapeHtml(r.observedResults || 'N/A')}</p>
+        ${r.failures ? `<p style="font-size:0.86rem;color:var(--rose);margin-top:4px"><strong>Failures:</strong> ${escapeHtml(r.failures)}</p>` : ''}
+      </div>
+    `).join('');
+  }
 
-/* --------------------------------------------------------------------- boot */
-(function boot() {
-  const savedEndpoint = store.get('customEndpoint', '');
-  if (savedEndpoint) PROVIDERS.find((p) => p.id === 'custom').endpoint = savedEndpoint;
-  route();
-  renderLog();
-  renderStats();
-  renderAutomations();
-  renderProviders();
-  phone.connect();
-  pushLog('info', `Connecting to phone backend at ${backendUrl()}`);
-  // Keep the sidebar honest even if the socket dies quietly.
-  setInterval(() => { if (phone.state !== 'live') paintPhoneState(phone.state); }, 3000);
+  // --- Actions ---
+  window.__vexa = {
+    async runNow(id) {
+      const ok = await dispatchWorkflow('agent-runner.yml', { automation_id: id });
+      if (ok) alert('Agent execution dispatched to GitHub Actions! Check back shortly for the report.');
+    },
+    openChat(id) {
+      state.activeAutoId = id;
+      renderChatSelector();
+      loadAutomationDetails(id);
+      document.querySelector('[data-view="dashboard"]').click();
+    },
+    async togglePause(id) {
+      const a = state.automations.find((x) => x.id === id);
+      if (!a) return;
+      a.paused = !a.paused;
+      a.status = a.paused ? 'stopped' : 'waiting';
+      a.updatedAt = new Date().toISOString();
+      await ghWriteJson('data/automations.json', state.automations, `vexa: ${a.paused ? 'pause' : 'resume'} ${a.name}`);
+      renderAutomations();
+    },
+    editAuto(id) {
+      const a = state.automations.find((x) => x.id === id);
+      if (!a) return;
+      $('autoEditId').value = a.id;
+      $('autoName').value = a.name;
+      $('autoInstructions').value = a.instructions;
+      $('autoScheduleType').value = a.scheduleType;
+      $('autoModalTitle').textContent = 'Edit Automation';
+      $('autoModal').classList.remove('hidden');
+    },
+    async deleteAuto(id) {
+      if (!confirm('Delete this automation?')) return;
+      state.automations = state.automations.filter((x) => x.id !== id);
+      await ghWriteJson('data/automations.json', state.automations, `vexa: delete automation ${id}`);
+      renderAutomations();
+      renderChatSelector();
+    },
+  };
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // --- Event Listeners ---
+  function init() {
+    // Navigation
+    document.querySelectorAll('.nav-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.nav-item').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
+        btn.classList.add('active');
+        $(`view-${btn.dataset.view}`).classList.add('active');
+        $('sidebar').classList.remove('open');
+      });
+    });
+
+    $('mobileMenuBtn').addEventListener('click', () => $('sidebar').classList.add('open'));
+    $('closeSidebarBtn').addEventListener('click', () => $('sidebar').classList.remove('open'));
+    $('refreshAllBtn').addEventListener('click', syncAll);
+
+    // Start Emulator
+    const startEmu = async () => {
+      const ok = await dispatchWorkflow('android-emulator.yml');
+      if (ok) alert('Android Emulator workflow dispatched! It will boot in ~2-3 minutes.');
+    };
+    $('startEmulatorBtn').addEventListener('click', startEmu);
+    $('overlayStartBtn').addEventListener('click', startEmu);
+
+    // Modal
+    const openNewModal = () => {
+      $('autoEditId').value = '';
+      $('autoForm').reset();
+      $('autoModalTitle').textContent = 'New Automation';
+      $('autoModal').classList.remove('hidden');
+    };
+    $('newAutoQuickBtn').addEventListener('click', openNewModal);
+    $('createAutoBtn').addEventListener('click', openNewModal);
+    $('closeAutoModal').addEventListener('click', () => $('autoModal').classList.add('hidden'));
+    $('cancelAutoModal').addEventListener('click', () => $('autoModal').classList.add('hidden'));
+
+    $('autoInterval').addEventListener('change', (e) => {
+      $('customIntervalGroup').classList.toggle('hidden', e.target.value !== 'custom');
+    });
+
+    $('autoForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const editId = $('autoEditId').value;
+      const scheduleType = $('autoScheduleType').value;
+      const intervalVal = $('autoInterval').value;
+      const intervalMinutes = intervalVal === 'custom' ? Number($('autoCustomMinutes').value) : Number(intervalVal);
+      const now = new Date().toISOString();
+
+      if (editId) {
+        const a = state.automations.find((x) => x.id === editId);
+        if (a) {
+          a.name = $('autoName').value.trim();
+          a.instructions = $('autoInstructions').value.trim();
+          a.scheduleType = scheduleType;
+          a.intervalMinutes = intervalMinutes;
+          a.updatedAt = now;
+        }
+      } else {
+        const newAuto = {
+          id: `auto_${Date.now()}`,
+          name: $('autoName').value.trim(),
+          instructions: $('autoInstructions').value.trim(),
+          scheduleType,
+          intervalMinutes,
+          enabled: true,
+          paused: false,
+          status: 'queued',
+          nextRunAt: now,
+          lastRunAt: null,
+          runCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        state.automations.unshift(newAuto);
+        state.activeAutoId = newAuto.id;
+      }
+
+      await ghWriteJson('data/automations.json', state.automations, 'vexa: save automation');
+      $('autoModal').classList.add('hidden');
+      renderAutomations();
+      renderChatSelector();
+    });
+
+    // Chat
+    $('chatAutoSelect').addEventListener('change', (e) => {
+      state.activeAutoId = e.target.value;
+      loadAutomationDetails(state.activeAutoId);
+    });
+
+    $('chatRunNowBtn').addEventListener('click', () => state.activeAutoId && window.__vexa.runNow(state.activeAutoId));
+    $('chatPauseBtn').addEventListener('click', () => state.activeAutoId && window.__vexa.togglePause(state.activeAutoId));
+    $('chatStopBtn').addEventListener('click', () => state.activeAutoId && window.__vexa.togglePause(state.activeAutoId));
+
+    $('chatForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!state.activeAutoId) return;
+      const input = $('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+
+      const chat = state.chats[state.activeAutoId] || [];
+      chat.push({ id: `msg_${Date.now()}`, role: 'user', content: text, timestamp: new Date().toISOString() });
+
+      const lower = text.toLowerCase();
+      if (lower === 'pause' || lower === 'stop') {
+        await window.__vexa.togglePause(state.activeAutoId);
+      } else if (lower === 'run' || lower === 'run now') {
+        await window.__vexa.runNow(state.activeAutoId);
+      }
+
+      await ghWriteJson(`data/chats/${state.activeAutoId}.json`, chat, `vexa: chat update ${state.activeAutoId}`);
+      state.chats[state.activeAutoId] = chat;
+      renderChat();
+    });
+
+    // Settings
+    $('cfgGatewayUrl').value = state.settings.gatewayUrl;
+    $('cfgGithubPat').value = state.settings.githubPat;
+    $('cfgNvidiaKey').value = state.settings.nvidiaKey;
+
+    $('settingsForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      state.settings.gatewayUrl = $('cfgGatewayUrl').value.trim();
+      state.settings.githubPat = $('cfgGithubPat').value.trim();
+      state.settings.nvidiaKey = $('cfgNvidiaKey').value.trim();
+      localStorage.setItem('vexa.gatewayUrl', state.settings.gatewayUrl);
+      localStorage.setItem('vexa.githubPat', state.settings.githubPat);
+      localStorage.setItem('vexa.nvidiaKey', state.settings.nvidiaKey);
+      $('settingsSavedMsg').textContent = '✓ Saved locally';
+      checkEmulatorHealth();
+    });
+
+    setupPhoneInteraction();
+    syncAll();
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
 })();

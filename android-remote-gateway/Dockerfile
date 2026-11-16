@@ -1,0 +1,27 @@
+FROM node:22-alpine AS builder
+WORKDIR /build
+COPY package.json ./
+RUN npm install
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build && npm prune --omit=dev
+
+FROM node:22-alpine
+ARG GATEWAY_BUILD=dev
+ENV GATEWAY_BUILD=${GATEWAY_BUILD}
+LABEL org.opencontainers.image.source="https://github.com/Joshbond123/VIBELY"
+LABEL org.opencontainers.image.description="VIBELY Android Remote Phone Gateway & 4h Rotation Coordinator"
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV DATA_DIR=/app/data
+
+COPY --from=builder /build/package.json ./package.json
+COPY --from=builder /build/node_modules ./node_modules
+COPY --from=builder /build/dist ./dist
+
+RUN mkdir -p /app/data/persistence
+VOLUME ["/app/data"]
+EXPOSE 8080
+CMD ["node", "dist/server.js"]
