@@ -1,0 +1,17 @@
+[
+  {
+    "id": "exec_1794855877183_znmg4",
+    "automationId": "auto_test_1",
+    "status": "failed",
+    "startedAt": "2026-11-16T19:04:37.183Z",
+    "finishedAt": "2026-11-16T19:04:37.183Z",
+    "taskReceived": "Open Settings on the Android phone, check the Android version and Wi-Fi status, and report what you observe.",
+    "actionsPerformed": [],
+    "appsInteracted": [],
+    "observedResults": "Could not connect to running Android emulator.",
+    "outcomeAchieved": false,
+    "failures": "Android emulator gateway is offline (No gatewayUrl configured in data/emulator.json). Start the Android Emulator workflow first.",
+    "remainingSteps": [],
+    "nextExecutionScheduled": null
+  }
+]
