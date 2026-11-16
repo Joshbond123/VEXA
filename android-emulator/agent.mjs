@@ -1973,7 +1973,7 @@ async function main() {
   await verifyLocalEmulatorReadiness();
 
   // Pre-load persisted state onto this new emulator while isolated in standby
-  await runStateManager('restore');
+  await runStateManager('restore').catch((e) => log('State restore skipped: ' + e.message));
   // ROOT CAUSE of "the phone keeps getting stuck after a rotation": the churn
   // guards (unplug the battery so background dexopt is never scheduled, freeze
   // Play's background work, stop TikTok/Vibes burning CPU off-screen, force the
