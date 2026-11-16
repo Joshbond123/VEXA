@@ -46,8 +46,9 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Install cloudflared & gateway dependencies
+      - name: Install cloudflared, scrcpy-server & gateway dependencies
         run: |
+          curl -fsSL https://github.com/Genymobile/scrcpy/releases/download/v2.7/scrcpy-server-v2.7 -o android-emulator/scrcpy-server.jar
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared || sudo curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
           sudo chmod +x /usr/local/bin/cloudflared
           cd android-remote-gateway && npm ci && npm run build
