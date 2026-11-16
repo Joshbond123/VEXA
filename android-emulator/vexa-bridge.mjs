@@ -5,8 +5,10 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.PORT || 8080);
 
+const ADB_BIN = process.env.ADB_PATH || '/usr/local/lib/android/sdk/platform-tools/adb';
+
 async function adb(args, encoding = 'utf8') {
-  return execFileAsync('adb', ['-s', 'emulator-5554', ...args], {
+  return execFileAsync(ADB_BIN, ['-s', 'emulator-5554', ...args], {
     encoding,
     maxBuffer: 25 * 1024 * 1024,
     timeout: 15000,
