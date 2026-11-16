@@ -1,1 +1,17 @@
-[]
+[
+  {
+    "id": "auto_test_1",
+    "name": "Inspect Android Settings",
+    "instructions": "Open Settings on the Android phone, check the Android version and Wi-Fi status, and report what you observe.",
+    "scheduleType": "once",
+    "intervalMinutes": 60,
+    "enabled": true,
+    "paused": false,
+    "status": "queued",
+    "nextRunAt": "2026-11-16T19:04:24.823784Z",
+    "lastRunAt": null,
+    "runCount": 0,
+    "createdAt": "2026-11-16T19:04:24.823784Z",
+    "updatedAt": "2026-11-16T19:04:24.823784Z"
+  }
+]
