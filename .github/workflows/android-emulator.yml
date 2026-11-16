@@ -109,4 +109,4 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
             echo "Android Emulator booted! Connecting VEXA device agent..."
-            GATEWAY_URL="http://localhost:8080" node android-emulator/agent.mjs
+            EMULATOR_GATEWAY_URL="http://localhost:8080" node android-emulator/agent.mjs
