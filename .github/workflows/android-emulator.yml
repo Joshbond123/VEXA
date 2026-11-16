@@ -54,12 +54,11 @@ jobs:
           cd android-remote-gateway && npm ci && npm run build
           cd ../android-emulator && npm ci
 
-      - name: Start Gateway & Cloudflare Tunnel
+      - name: Start VEXA ADB Bridge & Cloudflare Tunnel
         id: tunnel
         run: |
-          mkdir -p /tmp/vexa-data
-          PORT=8080 DATA_DIR=/tmp/vexa-data node android-remote-gateway/dist/server.js > /tmp/gateway.log 2>&1 &
-          sleep 3
+          PORT=8080 node android-emulator/vexa-bridge.mjs > /tmp/gateway.log 2>&1 &
+          sleep 2
           cloudflared tunnel --url http://localhost:8080 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
           for i in $(seq 1 30); do
             URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)
@@ -109,5 +108,5 @@ jobs:
           disk-size: 8192M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
-            echo "Android Emulator booted! Connecting VEXA device agent..."
-            EMULATOR_GATEWAY_URL="http://localhost:8080" node android-emulator/agent.mjs
+            echo "Android Emulator booted! Keeping VEXA ADB Bridge alive..."
+            sleep $(( ${ROTATION_MINUTES:-240} * 60 ))
