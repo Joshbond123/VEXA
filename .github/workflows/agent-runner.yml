@@ -31,7 +31,7 @@ jobs:
       STEP_DELAY_MS: '500'
       SCREEN_CHANGE_RETRIES: '2'
       SCREEN_CHANGE_BACKOFF_MS: '1000'
-      NVIDIA_TIMEOUT_MS: '30000'
+      NVIDIA_TIMEOUT_MS: '60000'
       LAUNCH_EXTRA_DELAY_MS: '2500'
       TARGET_AUTOMATION_ID: ${{ inputs.automation_id || '' }}
     steps:

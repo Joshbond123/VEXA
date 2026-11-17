@@ -350,14 +350,27 @@ async function runAutomation(automation, emulator) {
           break;
         }
 
-        const decision = await askAgentBrain({
-          task: automation.instructions,
-          history: actionsPerformed,
-          stepIndex: step,
-          screenshotBase64: screenshotB64,
-          deviceState,
-          stuckHint: stepsWithoutProgress >= 2,
-        });
+        let decision;
+        try {
+          decision = await askAgentBrain({
+            task: automation.instructions,
+            history: actionsPerformed,
+            stepIndex: step,
+            screenshotBase64: screenshotB64,
+            deviceState,
+            stuckHint: stepsWithoutProgress >= 2,
+          });
+        } catch (aiErr) {
+          // AI failure fallback: launch Play Store directly instead of failing the whole task
+          console.warn(`AI provider failed: ${aiErr.message}. Falling back to launch(com.android.vending)`);
+          decision = {
+            action: 'launch',
+            text: 'com.android.vending',
+            app: 'com.android.vending',
+            thought: 'AI provider unavailable — launching Play Store directly',
+            _provider: 'fallback',
+          };
+        }
 
         if (decision.app) appsInteracted.add(decision.app);
 
