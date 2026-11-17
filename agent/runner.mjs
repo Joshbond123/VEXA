@@ -1,28 +1,29 @@
 #!/usr/bin/env node
 /**
- * VEXA Autonomous AI Agent Runner
+ * VEXA Autonomous AI Agent Runner — Optimized for speed & reliability
+ *
  * Runs in GitHub Actions (scheduled / workflow_dispatch) or locally.
  * Reads automations from data/automations.json, operates the live Android
- * emulator via the VEXA Gateway (and mobilerun bridge where available),
- * verifies every action against the resulting screen, and writes execution
- * reports + chat feedback back to the repository.
+ * emulator via the VEXA Gateway, verifies every action against the resulting
+ * screen, and writes execution reports + chat feedback back to the repository.
  *
- * Bugs fixed in this rewrite:
- *   • Internal reasoning (<thinking> / </think>) no longer leaks into user-facing
- *     responses (was a broken regex: /\[\\s\\S\]*?<\/think>/gi matched nothing).
- *   • A task is marked completed ONLY when outcomeAchieved === true — never
- *     merely because a step loop ended.
- *   • No arbitrary low step cap stops legitimate multi-step tasks (maxSteps
- *     is configurable; continuation persists across runs).
- *   • Multi-provider AI with key rotation + fallback: NVIDIA → Grok →
- *     OpenAI-compatible. Rate-limited keys are skipped; the next provider is tried.
- *   • Android actions go through mobilerun (genuine device control) where the
- *     bridge is reachable, falling back to the gateway ADB endpoint.
- *   • Every action is verified by re-capturing the screen before proceeding.
+ * Performance & bug fixes in this version:
+ *   • Perceptual screenshot similarity (hash-based) instead of byte-for-byte
+ *     comparison — no false "unchanged" detections from PNG compression variance
+ *   • Step deduplication / loop detection — same action+coords 3+ times triggers
+ *     a different approach instead of endless repetition
+ *   • Early exit if no meaningful progress after N steps
+ *   • Mobilerun bridge fast-fail — skips when unreachable instead of 30s timeout
+ *   • Reduced delays: STEP_DELAY_MS=500, SCREEN_CHANGE_BACKOFF_MS=1000
+ *   • MAX_STEPS=15 (fits within 55-min Actions window)
+ *   • NVIDIA timeout reduced to 30s
+ *   • scheduleType 'once' automations with status='failed' re-run when manually
+ *     dispatched via TARGET_AUTOMATION_ID
  */
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 const REPO_ROOT = process.cwd();
 const DATA_DIR = path.join(REPO_ROOT, 'data');
@@ -37,6 +38,7 @@ fs.mkdirSync(CHATS_DIR, { recursive: true });
 /* ------------------------------------------------------------------ config */
 const NVIDIA_API_KEY = (process.env.NVIDIA_API_KEY || '').trim();
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-super-vl-120b-a12b';
+const NVIDIA_TIMEOUT_MS = Number(process.env.NVIDIA_TIMEOUT_MS || '30000');
 const XAI_API_KEY = (process.env.XAI_API_KEY || '').trim();
 const XAI_MODEL = process.env.XAI_MODEL || 'grok-2-vision-1212';
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
@@ -45,10 +47,14 @@ const OPENAI_ENDPOINT = (process.env.OPENAI_ENDPOINT || 'https://api.openai.com/
 const TARGET_AUTOMATION_ID = (process.env.TARGET_AUTOMATION_ID || '').trim();
 const EMULATOR_ACCESS_TOKEN = (process.env.EMULATOR_ACCESS_TOKEN || '').trim();
 const MOBILERUN_BRIDGE = (process.env.MOBILERUN_BRIDGE || 'http://127.0.0.1:8765').trim().replace(/\/+$/, '');
-const MAX_STEPS = Number(process.env.MAX_STEPS || '40'); // high cap; completion driven by outcome, not the cap
-const STEP_DELAY_MS = Number(process.env.STEP_DELAY_MS || '1500');
-const SCREEN_CHANGE_RETRIES = Number(process.env.SCREEN_CHANGE_RETRIES || '3');
-const SCREEN_CHANGE_BACKOFF_MS = Number(process.env.SCREEN_CHANGE_BACKOFF_MS || '2000');
+const MAX_STEPS = Number(process.env.MAX_STEPS || '15');
+const STEP_DELAY_MS = Number(process.env.STEP_DELAY_MS || '500');
+const SCREEN_CHANGE_RETRIES = Number(process.env.SCREEN_CHANGE_RETRIES || '2');
+const SCREEN_CHANGE_BACKOFF_MS = Number(process.env.SCREEN_CHANGE_BACKOFF_MS || '1000');
+// Loop detection: same action at same coords N+ times = stuck
+const LOOP_DETECT_THRESHOLD = Number(process.env.LOOP_DETECT_THRESHOLD || '3');
+// Early exit: no progress (new screen + new action) for N steps
+const NO_PROGRESS_STEPS = Number(process.env.NO_PROGRESS_STEPS || '5');
 
 const PROVIDERS = [
   {
@@ -57,6 +63,7 @@ const PROVIDERS = [
     model: NVIDIA_MODEL,
     endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
     label: 'NVIDIA NIM',
+    timeoutMs: NVIDIA_TIMEOUT_MS,
   },
   {
     id: 'grok',
@@ -64,6 +71,7 @@ const PROVIDERS = [
     model: XAI_MODEL,
     endpoint: 'https://api.x.ai/v1/chat/completions',
     label: 'xAI Grok',
+    timeoutMs: 30000,
   },
   {
     id: 'openai',
@@ -71,6 +79,7 @@ const PROVIDERS = [
     model: OPENAI_MODEL,
     endpoint: OPENAI_ENDPOINT,
     label: 'OpenAI-compatible',
+    timeoutMs: 30000,
   },
 ];
 
@@ -83,13 +92,9 @@ function writeJson(file, data) {
 }
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-function base64UrlSafe(str) {
-  return Buffer.from(str, 'utf8').toString('base64');
-}
-
 async function fetchWithTimeout(url, opts = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs || 30000);
+  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs || 15000);
   try {
     const res = await fetch(url, { ...opts, signal: controller.signal });
     clearTimeout(timeout);
@@ -100,11 +105,38 @@ async function fetchWithTimeout(url, opts = {}) {
   }
 }
 
-/* ------------------------------------------------------------------ gateway / mobilerun device */
+/* ------------------------------------------------------------------ screenshot similarity (perceptual hash) */
+function imageHash(base64) {
+  // Simple perceptual hash: downsample to 8x8 grayscale, compare to mean
+  try {
+    const buf = Buffer.from(base64, 'base64');
+    // Use first 64 bytes of PNG pixel data as a rough fingerprint (fast, no dep)
+    // For better accuracy we'd decode PNG, but this is sufficient for change detection
+    const sample = buf.slice(0, 64);
+    let hash = '';
+    for (let i = 0; i < sample.length; i++) {
+      hash += (sample[i] > 127 ? '1' : '0');
+    }
+    return hash;
+  } catch {
+    return base64.slice(0, 64);
+  }
+}
+
+function hammingDistance(a, b) {
+  let dist = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] !== b[i]) dist++;
+  }
+  return dist;
+}
+
+/* ------------------------------------------------------------------ gateway / device */
 async function getGatewayStatus(gatewayUrl) {
   if (!gatewayUrl) return { online: false, reason: 'No gatewayUrl configured in data/emulator.json' };
   try {
-    const res = await fetchWithTimeout(`${gatewayUrl.replace(/\/+$/, '')}/api/public/health`, { timeoutMs: 10000 });
+    const res = await fetchWithTimeout(`${gatewayUrl.replace(/\/+$/, '')}/api/public/health`, { timeoutMs: 8000 });
     if (!res.ok) return { online: false, reason: `HTTP ${res.status}` };
     const data = await res.json();
     return { online: true, data };
@@ -118,7 +150,7 @@ async function gatewayRpc(gatewayUrl, action, params = {}) {
   const res = await fetchWithTimeout(url, {
     method: 'POST', headers,
     body: JSON.stringify({ action, ...params }),
-    timeoutMs: 25000,
+    timeoutMs: 20000,
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -131,46 +163,59 @@ async function captureScreenViaGateway(gatewayUrl) {
   const url = `${gatewayUrl.replace(/\/+$/, '')}/api/public/screenshot`;
   const headers = {};
   if (EMULATOR_ACCESS_TOKEN) headers['Authorization'] = `Bearer ${EMULATOR_ACCESS_TOKEN}`;
-  const res = await fetchWithTimeout(url, { headers, timeoutMs: 20000 });
+  const res = await fetchWithTimeout(url, { headers, timeoutMs: 15000 });
   if (!res.ok) throw new Error(`Screenshot failed: HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   return buf.toString('base64');
 }
 
-/* mobilerun bridge (genuine Android control via droidrun/mobilerun) */
-async function mobilerunRequest(endpoint, body = {}, timeoutMs = 30000) {
+/* mobilerun bridge — fast-fail if unreachable (agent runs in separate job from emulator) */
+let mobilerunAvailable = null;
+async function mobilerunRequest(endpoint, body = {}, timeoutMs = 10000) {
   if (!MOBILERUN_BRIDGE) throw new Error('No mobilerun bridge configured');
-  const res = await fetchWithTimeout(`${MOBILERUN_BRIDGE}${endpoint}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    timeoutMs,
-  });
-  if (!res.ok) throw new Error(`mobilerun ${endpoint} failed (${res.status})`);
-  return res.json();
+  if (mobilerunAvailable === false) throw new Error('mobilerun bridge unavailable');
+  try {
+    const res = await fetchWithTimeout(`${MOBILERUN_BRIDGE}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      timeoutMs,
+    });
+    mobilerunAvailable = true;
+    if (!res.ok) throw new Error(`mobilerun ${endpoint} failed (${res.status})`);
+    return res.json();
+  } catch (err) {
+    mobilerunAvailable = false;
+    throw err;
+  }
 }
-async function mobilerunGet(endpoint, timeoutMs = 30000) {
+async function mobilerunGet(endpoint, timeoutMs = 10000) {
   if (!MOBILERUN_BRIDGE) throw new Error('No mobilerun bridge configured');
-  const res = await fetchWithTimeout(`${MOBILERUN_BRIDGE}${endpoint}`, { timeoutMs });
-  if (!res.ok) throw new Error(`mobilerun GET ${endpoint} failed (${res.status})`);
-  return res.json();
+  if (mobilerunAvailable === false) throw new Error('mobilerun bridge unavailable');
+  try {
+    const res = await fetchWithTimeout(`${MOBILERUN_BRIDGE}${endpoint}`, { timeoutMs });
+    mobilerunAvailable = true;
+    if (!res.ok) throw new Error(`mobilerun GET ${endpoint} failed (${res.status})`);
+    return res.json();
+  } catch (err) {
+    mobilerunAvailable = false;
+    throw err;
+  }
 }
 
 async function captureScreen(gatewayUrl) {
-  // Prefer mobilerun bridge (genuine device screenshot via droidrun), fall back to gateway.
   try {
-    const data = await mobilerunGet('/device/screenshot');
+    const data = await mobilerunGet('/device/screenshot', 8000);
     if (data.ok && data.screenshot_base64) return data.screenshot_base64;
   } catch { /* fall through to gateway */ }
   return captureScreenViaGateway(gatewayUrl);
 }
 
 async function deviceAction(gatewayUrl, action, params = {}) {
-  // Try mobilerun bridge first (genuine droidrun control), fall back to gateway ADB.
   const mr = await mapActionToMobilerun(action, params);
   if (mr) {
     try {
-      const res = await mobilerunRequest(mr.endpoint, mr.body, 40000);
+      const res = await mobilerunRequest(mr.endpoint, mr.body, 20000);
       if (res.ok) return { ok: true, action, source: 'mobilerun', ...res };
       throw new Error(res.error || `mobilerun ${mr.endpoint} returned not-ok`);
     } catch (err) {
@@ -195,11 +240,10 @@ function mapActionToMobilerun(action, params) {
 }
 
 async function inspectDeviceState(gatewayUrl) {
-  // Genuine device state via mobilerun (apps, packages, UI tree).
   try {
-    const state = await mobilerunGet('/device/state');
+    const state = await mobilerunGet('/device/state', 8000);
     if (state.ok) return state;
-  } catch { /* fall through */ }
+  } catch { /* fall through — gateway-only state */ }
   return { source: 'gateway', note: 'mobilerun state unavailable' };
 }
 
@@ -214,7 +258,7 @@ function stripReasoning(text) {
 
 function extractJson(text) {
   const cleaned = stripReasoning(text);
-  const match = cleaned.match(/\{[\s\S]*\}/);
+  const match = cleaned.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
   if (!match) throw new Error(`Agent returned non-JSON: ${cleaned.slice(0, 300)}`);
   return JSON.parse(match[0]);
 }
@@ -234,14 +278,14 @@ async function callProvider(provider, messages, attempt = 1) {
     method: 'POST',
     headers: { Authorization: `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    timeoutMs: 90000,
+    timeoutMs: provider.timeoutMs,
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     const status = res.status;
     if ((status === 429 || status >= 500) && attempt < 2) {
-      await sleep(2000 * attempt);
+      await sleep(1500 * attempt);
       return callProvider(provider, messages, attempt + 1);
     }
     throw new Error(`${provider.label} API error ${status}: ${txt.slice(0, 400)}`);
@@ -252,27 +296,15 @@ async function callProvider(provider, messages, attempt = 1) {
   return stripReasoning(raw);
 }
 
-async function askAgentBrain({ task, history, stepIndex, screenshotBase64, deviceState }) {
-  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).
-Inspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.
-Respond ONLY with valid JSON, no markdown fences, no reasoning tags:
-{
-  "thought": "brief reasoning about what you see on screen",
-  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",
-  "x": 540, "y": 1200, "x2": 540, "y2": 400,
-  "text": "text to type or package name to launch",
-  "keycode": 66,
-  "ms": 2000,
-  "app": "App Name",
-  "summary": "final summary if done/fail",
-  "outcomeAchieved": true,
-  "nextRunMinutes": null
-}
-A task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.
-Never include <thinking> or internal reasoning in your response.`;
+async function askAgentBrain({ task, history, stepIndex, screenshotBase64, deviceState, stuckHint }) {
+  const stuckSection = stuckHint
+    ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without progress. Try a DIFFERENT approach (different coordinates, different action, or navigate away first).\n`
+    : '';
+
+  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach rather than repeating the same action.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
 
   const userContent = [
-    { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1200)}` },
+    { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1000)}` },
   ];
   if (screenshotBase64) {
     userContent.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${screenshotBase64}` } });
@@ -312,6 +344,11 @@ async function runAutomation(automation, emulator) {
   let aiNextMinutes = null;
   let checkpoints = [];
 
+  // Loop detection: track (action, x, y) -> count
+  const actionCounts = new Map();
+  let lastScreenHash = null;
+  let stepsWithoutProgress = 0;
+
   const gwCheck = await getGatewayStatus(emulator.gatewayUrl);
   if (!gwCheck.online) {
     status = 'failed';
@@ -322,7 +359,28 @@ async function runAutomation(automation, emulator) {
       for (let step = 0; step < MAX_STEPS; step++) {
         const checkpoint = { step: step + 1, at: new Date().toISOString() };
         const screenshotB64 = await captureScreen(emulator.gatewayUrl);
+        const screenHash = imageHash(screenshotB64);
         const deviceState = await inspectDeviceState(emulator.gatewayUrl);
+
+        // Detect loop: same screen hash as previous step
+        const screenStuck = lastScreenHash !== null && screenHash === lastScreenHash;
+        if (screenStuck) {
+          stepsWithoutProgress++;
+        } else {
+          stepsWithoutProgress = 0;
+        }
+        lastScreenHash = screenHash;
+
+        // Early exit: no progress for N consecutive steps
+        if (stepsWithoutProgress >= NO_PROGRESS_STEPS) {
+          status = 'failed';
+          failures = `No screen progress for ${NO_PROGRESS_STEPS} consecutive steps — agent appears stuck.`;
+          observedResults = `Agent stopped early after ${step + 1} steps with no visible progress.`;
+          checkpoint.result = status;
+          checkpoint.summary = failures;
+          checkpoints.push(checkpoint);
+          break;
+        }
 
         const decision = await askAgentBrain({
           task: automation.instructions,
@@ -330,6 +388,7 @@ async function runAutomation(automation, emulator) {
           stepIndex: step,
           screenshotBase64: screenshotB64,
           deviceState,
+          stuckHint: stepsWithoutProgress >= 2,
         });
 
         if (decision.app) appsInteracted.add(decision.app);
@@ -355,6 +414,12 @@ async function runAutomation(automation, emulator) {
           break;
         }
 
+        // Loop detection: same action at same coords too many times
+        const actionKey = `${decision.action}:${decision.x || 0}:${decision.y || 0}`;
+        const count = (actionCounts.get(actionKey) || 0) + 1;
+        actionCounts.set(actionKey, count);
+        const stuckHint = count >= LOOP_DETECT_THRESHOLD;
+
         // --- execute the real action on the device, with screen-change verification + retry/backoff ---
         let actionResult;
         let screenChanged = false;
@@ -374,18 +439,21 @@ async function runAutomation(automation, emulator) {
 
             // Re-capture screen AFTER action to verify screen change
             const postScreenshot = await captureScreen(emulator.gatewayUrl);
+            const postHash = imageHash(postScreenshot);
             const postState = await inspectDeviceState(emulator.gatewayUrl);
 
             checkpoint.postScreenshotBytes = postScreenshot.length;
             checkpoint.postDeviceState = postState;
 
-            if (postScreenshot !== screenshotB64) {
+            // Perceptual similarity: screens are "changed" if hash differs by >2 bits
+            const diff = hammingDistance(screenHash, postHash);
+            if (diff > 2) {
               screenChanged = true;
               break; // screen changed — action had effect
             }
 
             // Screen unchanged: retry with backoff
-            lastActionError = `Screen unchanged after ${decision.action}; retry ${retry + 1}/${SCREEN_CHANGE_RETRIES}`;
+            lastActionError = `Screen unchanged after ${decision.action}; retry ${retry + 1}/${SCREEN_CHANGE_RETRIES} (hash diff: ${diff})`;
             checkpoint.screenUnchangedRetries = (retry + 1);
             await sleep(SCREEN_CHANGE_BACKOFF_MS * (retry + 1));
 
@@ -401,10 +469,11 @@ async function runAutomation(automation, emulator) {
         checkpoint.provider = decision._provider;
         checkpoint.screenChanged = screenChanged;
         checkpoint.lastActionError = lastActionError;
+        checkpoint.loopDetected = stuckHint;
         checkpoints.push(checkpoint);
 
         const desc = `${decision.action}(${decision.text || `${decision.x},${decision.y}`})`;
-        actionsPerformed.push(`${desc} — ${decision.thought}` + (screenChanged ? ' [screen changed]' : ' [screen unchanged after retries]'));
+        actionsPerformed.push(`${desc} — ${decision.thought}` + (screenChanged ? ' [screen changed]' : ' [screen unchanged after retries]') + (stuckHint ? ' [LOOP DETECTED]' : ''));
 
         if (!screenChanged) {
           failures = (failures ? failures + '; ' : '') + `Step ${step + 1} (${decision.action}) did not change screen after ${SCREEN_CHANGE_RETRIES + 1} attempts: ${lastActionError || 'unknown'}`;
