@@ -9,10 +9,10 @@
     "paused": false,
     "status": "failed",
     "nextRunAt": null,
-    "lastRunAt": "2026-11-17T08:55:31.595Z",
-    "runCount": 6,
+    "lastRunAt": "2026-11-17T08:58:40.808Z",
+    "runCount": 7,
     "createdAt": "2026-11-17T01:07:32.456038+00:00",
-    "updatedAt": "2026-11-17T08:55:31.595Z",
+    "updatedAt": "2026-11-17T08:58:40.808Z",
     "lastRunStatus": "failed"
   },
   {
