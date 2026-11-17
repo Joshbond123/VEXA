@@ -1,19 +1,19 @@
 [
   {
     "id": "auto_playstore_1",
-    "name": "Download & Use App from Play Store",
-    "instructions": "Open Google Play Store on the Android phone, search for 'Calculator' (or 'Google Keep'), install it, open the downloaded app, and perform a quick action inside it, then report what you observed.",
+    "name": "Download & Use App from Play Store (HARD TASK)",
+    "instructions": "Open Google Play Store on the Android phone. If a 'Complete account setup' or 'Add a payment option' gate appears, tap Skip to dismiss it. Then search for 'Google Keep' in the Play Store, install it, open Google Keep, create a new note with title 'VEXA Test Note' and body 'VEXA autonomous agent test successful', save the note, and report what you observed at each step.",
     "scheduleType": "once",
     "intervalMinutes": 60,
     "enabled": true,
     "paused": false,
-    "status": "failed",
+    "status": "queued",
     "nextRunAt": null,
-    "lastRunAt": "2026-11-17T08:58:40.808Z",
+    "lastRunAt": null,
     "runCount": 7,
     "createdAt": "2026-11-17T01:07:32.456038+00:00",
-    "updatedAt": "2026-11-17T08:58:40.808Z",
-    "lastRunStatus": "failed"
+    "updatedAt": "2026-11-17T09:00:00.000Z",
+    "lastRunStatus": null
   },
   {
     "id": "auto_test_1",

@@ -218,6 +218,30 @@ async function inspectDeviceState(gatewayUrl) {
   return { source: 'gateway', note: 'mobilerun state unavailable' };
 }
 
+/* ------------------------------------------------------------------ Play Store "Complete account setup" gate dismissal */
+async function dismissPlayStoreBlockers(gatewayUrl) {
+  // Capture current screen and ask AI if a Play Store account-setup gate is visible
+  const screenshotB64 = await captureScreen(gatewayUrl);
+  const decision = await askAgentBrain({
+    task: "Check if this screen shows a Google Play Store 'Complete account setup' or 'Add a payment option' gate/dialog. If yes, respond with action 'tap' at the Skip button coordinates. If no gate is visible, respond with action 'done'.",
+    history: [],
+    stepIndex: 0,
+    screenshotBase64: screenshotB64,
+    deviceState: { source: 'gate-check' },
+  });
+
+  if (decision.action === 'tap' && decision.x && decision.y) {
+    try {
+      await deviceAction(gatewayUrl, 'tap', { x: decision.x, y: decision.y });
+      await sleep(1500);
+      return { dismissed: true, coords: { x: decision.x, y: decision.y } };
+    } catch (err) {
+      return { dismissed: false, error: err.message };
+    }
+  }
+  return { dismissed: false, reason: 'No Play Store gate detected' };
+}
+
 /* ------------------------------------------------------------------ AI provider with rotation + fallback */
 function stripReasoning(text) {
   return text
@@ -332,6 +356,17 @@ async function runAutomation(automation, emulator) {
         await sleep(800);
       } catch (e) {
         // Non-fatal — continue even if home key fails
+      }
+
+      // Dismiss Play Store "Complete account setup" gate if visible (tap Skip)
+      try {
+        const gateResult = await dismissPlayStoreBlockers(emulator.gatewayUrl);
+        if (gateResult.dismissed) {
+          actionsPerformed.push(`GATE DISMISSED: Play Store account-setup gate skipped at (${gateResult.coords.x},${gateResult.coords.y})`);
+          observedResults = `Play Store account gate dismissed — skipped 'Add a payment option' dialog.`;
+        }
+      } catch (e) {
+        // Non-fatal — continue even if gate dismissal fails
       }
 
       for (let step = 0; step < MAX_STEPS; step++) {
