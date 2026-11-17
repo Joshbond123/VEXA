@@ -34,7 +34,12 @@
     settings: {
       gatewayUrl: '',
       provider: 'nvidia',
+      apiKeys: '',
       keyRotation: true,
+      githubPat: '',
+      githubRepo: 'Joshbond123/VEXA',
+      cloudflareAccountId: '',
+      cloudflareApiToken: '',
     },
     streamTimer: null,
     pointerDown: null,
@@ -47,7 +52,7 @@
   /* ------------------------------------------------------------------ dom helpers */
   const $ = (id) => document.getElementById(id);
   const on = (el, type, handler) => el && el.addEventListener(type, handler);
-  const escapeHtml = (str) => String(str || '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const escapeHtml = (str) => String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
   /* ------------------------------------------------------------------ toast */
@@ -465,6 +470,192 @@
     }
   }
 
+  /* ------------------------------------------------------------------ settings */
+  async function loadSettings() {
+    try {
+      const data = await cfApi('/api/frontend/settings');
+      const s = data.settings || {};
+      const cfgGatewayUrl = $('cfgGatewayUrl');
+      const cfgProvider = $('cfgProvider');
+      const cfgApiKeys = $('cfgApiKeys');
+      const cfgKeyRotation = $('cfgKeyRotation');
+      const cfgGitHubPat = $('cfgGitHubPat');
+      const cfgGitHubRepo = $('cfgGitHubRepo');
+      const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
+      const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
+
+      if (cfgGatewayUrl) cfgGatewayUrl.value = s.gatewayUrl || '';
+      if (cfgProvider) cfgProvider.value = s.provider || 'nvidia';
+      if (cfgApiKeys) cfgApiKeys.value = s.apiKeys || '';
+      if (cfgKeyRotation) cfgKeyRotation.checked = s.keyRotation !== false;
+      if (cfgGitHubPat) cfgGitHubPat.value = s.githubPat || '';
+      if (cfgGitHubRepo) cfgGitHubRepo.value = s.githubRepo || 'Joshbond123/VEXA';
+      if (cfgCloudflareAccountId) cfgCloudflareAccountId.value = s.cloudflareAccountId || '';
+      if (cfgCloudflareApiToken) cfgCloudflareApiToken.value = s.cloudflareApiToken || '';
+      state.settings = s;
+    } catch (err) {
+      console.error('Failed to load settings:', err);
+    }
+  }
+
+  async function saveSettings() {
+    const cfgGatewayUrl = $('cfgGatewayUrl');
+    const cfgProvider = $('cfgProvider');
+    const cfgApiKeys = $('cfgApiKeys');
+    const cfgKeyRotation = $('cfgKeyRotation');
+    const cfgGitHubPat = $('cfgGitHubPat');
+    const cfgGitHubRepo = $('cfgGitHubRepo');
+    const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
+    const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
+
+    const settings = {
+      gatewayUrl: (cfgGatewayUrl ? cfgGatewayUrl.value : '').trim(),
+      provider: (cfgProvider ? cfgProvider.value : 'nvidia'),
+      apiKeys: (cfgApiKeys ? cfgApiKeys.value : '').trim(),
+      keyRotation: cfgKeyRotation ? cfgKeyRotation.checked : true,
+      githubPat: (cfgGitHubPat ? cfgGitHubPat.value : '').trim(),
+      githubRepo: (cfgGitHubRepo ? cfgGitHubRepo.value : 'Joshbond123/VEXA').trim(),
+      cloudflareAccountId: (cfgCloudflareAccountId ? cfgCloudflareAccountId.value : '').trim(),
+      cloudflareApiToken: (cfgCloudflareApiToken ? cfgCloudflareApiToken.value : '').trim(),
+    };
+    try {
+      await cfApi('/api/frontend/settings', {
+        method: 'POST',
+        body: JSON.stringify(settings),
+      });
+      state.settings = settings;
+      const msg = $('settingsSavedMsg');
+      if (msg) { msg.textContent = 'Saved to Cloudflare'; setTimeout(() => { msg.textContent = ''; }, 2500); }
+      checkEmulatorHealth();
+      renderProviderStatus();
+      toast('Settings saved to Cloudflare KV', 'ok');
+    } catch (err) {
+      toast(`Failed to save settings: ${err.message}`, 'err');
+    }
+  }
+
+  /* ------------------------------------------------------------------ connection tests */
+  async function testAIConnection() {
+    const btn = $('btnTestAI');
+    const result = $('aiTestResult');
+    const cfgProvider = $('cfgProvider');
+    const cfgApiKeys = $('cfgApiKeys');
+
+    const provider = (cfgProvider ? cfgProvider.value : 'nvidia');
+    const apiKey = (cfgApiKeys ? cfgApiKeys.value : '').trim().split('\n')[0] || '';
+
+    if (!apiKey) {
+      result.textContent = 'No API key configured';
+      result.style.color = '#ef4444';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    result.textContent = '';
+    try {
+      const data = await cfApi('/api/settings/test-ai', {
+        method: 'POST',
+        body: JSON.stringify({ provider, apiKey, model: PROVIDERS.find(p => p.id === provider)?.model }),
+      });
+      if (data.ok) {
+        result.textContent = `✅ ${data.message || 'Connection successful'}`;
+        result.style.color = '#22c55e';
+        toast('AI connection test passed', 'ok');
+      } else {
+        result.textContent = `❌ ${data.error || 'Connection failed'}`;
+        result.style.color = '#ef4444';
+      }
+    } catch (err) {
+      result.textContent = `❌ ${err.message}`;
+      result.style.color = '#ef4444';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Test AI Connection';
+    }
+  }
+
+  async function testGitHubConnection() {
+    const btn = $('btnTestGitHub');
+    const result = $('githubTestResult');
+    const cfgGitHubPat = $('cfgGitHubPat');
+    const cfgGitHubRepo = $('cfgGitHubRepo');
+
+    const githubPat = (cfgGitHubPat ? cfgGitHubPat.value : '').trim();
+    const githubRepo = (cfgGitHubRepo ? cfgGitHubRepo.value : 'Joshbond123/VEXA').trim();
+
+    if (!githubPat) {
+      result.textContent = 'No GitHub PAT configured';
+      result.style.color = '#ef4444';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Verifying...';
+    result.textContent = '';
+    try {
+      const data = await cfApi('/api/settings/test-github', {
+        method: 'POST',
+        body: JSON.stringify({ githubPat, githubRepo }),
+      });
+      if (data.ok) {
+        const p = data.permissions || {};
+        result.textContent = `✅ Connected (admin:${p.admin}, push:${p.push}, pull:${p.pull})`;
+        result.style.color = '#22c55e';
+        toast('GitHub connection verified', 'ok');
+      } else {
+        result.textContent = `❌ ${data.error || 'Connection failed'}`;
+        result.style.color = '#ef4444';
+      }
+    } catch (err) {
+      result.textContent = `❌ ${err.message}`;
+      result.style.color = '#ef4444';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Verify GitHub Permissions';
+    }
+  }
+
+  async function testCloudflareConnection() {
+    const btn = $('btnTestCloudflare');
+    const result = $('cloudflareTestResult');
+    const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
+    const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
+
+    const accountId = (cfgCloudflareAccountId ? cfgCloudflareAccountId.value : '').trim();
+    const apiToken = (cfgCloudflareApiToken ? cfgCloudflareApiToken.value : '').trim();
+
+    if (!accountId || !apiToken) {
+      result.textContent = 'Account ID and API Token required';
+      result.style.color = '#ef4444';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    result.textContent = '';
+    try {
+      const data = await cfApi('/api/settings/test-cloudflare', {
+        method: 'POST',
+        body: JSON.stringify({ cloudflareAccountId: accountId, cloudflareApiToken: apiToken }),
+      });
+      if (data.ok) {
+        result.textContent = `✅ ${data.message || 'Connection successful'}`;
+        result.style.color = '#22c55e';
+        toast('Cloudflare connection test passed', 'ok');
+      } else {
+        result.textContent = `❌ ${data.error || 'Connection failed'}`;
+        result.style.color = '#ef4444';
+      }
+    } catch (err) {
+      result.textContent = `❌ ${err.message}`;
+      result.style.color = '#ef4444';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Test Cloudflare Connection';
+    }
+  }
+
   /* ------------------------------------------------------------------ page loading */
   function setPageLoading(yes) {
     document.body.classList.toggle('loading', yes);
@@ -658,7 +849,17 @@
         const s = data.settings || {};
         if (cfgGatewayUrl) cfgGatewayUrl.value = s.gatewayUrl || '';
         if (cfgProvider) cfgProvider.value = s.provider || 'nvidia';
+        const cfgApiKeys = $('cfgApiKeys');
+        if (cfgApiKeys) cfgApiKeys.value = s.apiKeys || '';
         if (cfgKeyRotation) cfgKeyRotation.checked = s.keyRotation !== false;
+        const cfgGitHubPat = $('cfgGitHubPat');
+        if (cfgGitHubPat) cfgGitHubPat.value = s.githubPat || '';
+        const cfgGitHubRepo = $('cfgGitHubRepo');
+        if (cfgGitHubRepo) cfgGitHubRepo.value = s.githubRepo || 'Joshbond123/VEXA';
+        const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
+        if (cfgCloudflareAccountId) cfgCloudflareAccountId.value = s.cloudflareAccountId || '';
+        const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
+        if (cfgCloudflareApiToken) cfgCloudflareApiToken.value = s.cloudflareApiToken || '';
         state.settings = s;
       } catch (err) {
         console.error('Failed to load settings:', err);
@@ -667,10 +868,24 @@
 
     on($('settingsForm'), 'submit', async (e) => {
       e.preventDefault();
+      const cfgGatewayUrl = $('cfgGatewayUrl');
+      const cfgProvider = $('cfgProvider');
+      const cfgApiKeys = $('cfgApiKeys');
+      const cfgKeyRotation = $('cfgKeyRotation');
+      const cfgGitHubPat = $('cfgGitHubPat');
+      const cfgGitHubRepo = $('cfgGitHubRepo');
+      const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
+      const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
+
       const settings = {
         gatewayUrl: (cfgGatewayUrl ? cfgGatewayUrl.value : '').trim(),
         provider: (cfgProvider ? cfgProvider.value : 'nvidia'),
+        apiKeys: (cfgApiKeys ? cfgApiKeys.value : '').trim(),
         keyRotation: cfgKeyRotation ? cfgKeyRotation.checked : true,
+        githubPat: (cfgGitHubPat ? cfgGitHubPat.value : '').trim(),
+        githubRepo: (cfgGitHubRepo ? cfgGitHubRepo.value : 'Joshbond123/VEXA').trim(),
+        cloudflareAccountId: (cfgCloudflareAccountId ? cfgCloudflareAccountId.value : '').trim(),
+        cloudflareApiToken: (cfgCloudflareApiToken ? cfgCloudflareApiToken.value : '').trim(),
       };
       try {
         await cfApi('/api/frontend/settings', {
@@ -682,10 +897,16 @@
         if (msg) { msg.textContent = 'Saved to Cloudflare'; setTimeout(() => { msg.textContent = ''; }, 2500); }
         checkEmulatorHealth();
         renderProviderStatus();
+        toast('Settings saved to Cloudflare KV', 'ok');
       } catch (err) {
         toast(`Failed to save settings: ${err.message}`, 'err');
       }
     });
+
+    // Connection test button handlers
+    on($('btnTestAI'), 'click', testAIConnection);
+    on($('btnTestGitHub'), 'click', testGitHubConnection);
+    on($('btnTestCloudflare'), 'click', testCloudflareConnection);
 
     setupPhoneInteraction();
     loadSettings();

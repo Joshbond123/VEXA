@@ -249,8 +249,8 @@
             <h3>Emulator Gateway</h3>
             <div class="form-group">
               <label for="cfgGatewayUrl">Gateway URL</label>
-              <input id="cfgGatewayUrl" type="url" placeholder="https://your-vexa-gateway.example.com" />
-              <small>Public URL of the VEXA Android Remote Gateway (cloudflared tunnel / Blitz). Keys are never stored here.</small>
+              <input id="cfgGatewayUrl" type="url" placeholder="https://vexa-ai-agent.replyraven001.workers.dev" />
+              <small>Public URL of the VEXA Android Remote Gateway (Cloudflare Worker). Keys are never stored here.</small>
             </div>
           </div>
 
@@ -267,12 +267,53 @@
             <div class="form-group">
               <label for="cfgApiKeys">API Keys (one per line)</label>
               <textarea id="cfgApiKeys" rows="4" placeholder="nvapi-…&#10;xai-…&#10;sk-…"></textarea>
-              <small>Stored server-side only. VEXA rotates keys per request and fails over automatically on rate limits (HTTP 429). Never committed or bundled.</small>
+              <small>Stored server-side only in Cloudflare KV. VEXA rotates keys per request and fails over automatically on rate limits (HTTP 429). Never committed or bundled.</small>
             </div>
             <div class="form-group" style="margin-top:8px;">
               <label style="display:flex;align-items:center;gap:8px;">
                 <input type="checkbox" id="cfgKeyRotation" checked /> <span>Enable automatic key rotation &amp; provider fallback</span>
               </label>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>AI Connection Test</h3>
+            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
+              <button type="button" id="btnTestAI" class="btn btn-secondary btn-sm">Test AI Connection</button>
+              <span id="aiTestResult" class="caption" style="margin-left:8px;"></span>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>GitHub Settings</h3>
+            <div class="form-group">
+              <label for="cfgGitHubPat">GitHub Personal Access Token</label>
+              <input id="cfgGitHubPat" type="password" placeholder="ghp_…" />
+              <small>Stored server-side only in Cloudflare KV. Never committed or bundled.</small>
+            </div>
+            <div class="form-group">
+              <label for="cfgGitHubRepo">GitHub Repository</label>
+              <input id="cfgGitHubRepo" type="text" placeholder="Joshbond123/VEXA" />
+            </div>
+            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
+              <button type="button" id="btnTestGitHub" class="btn btn-secondary btn-sm">Verify GitHub Permissions</button>
+              <span id="githubTestResult" class="caption" style="margin-left:8px;"></span>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3>Cloudflare Settings</h3>
+            <div class="form-group">
+              <label for="cfgCloudflareAccountId">Cloudflare Account ID</label>
+              <input id="cfgCloudflareAccountId" type="text" placeholder="f932764f168d0f77f74ae2b5c0c35c27" />
+            </div>
+            <div class="form-group">
+              <label for="cfgCloudflareApiToken">Cloudflare API Token</label>
+              <input id="cfgCloudflareApiToken" type="password" placeholder="…" />
+            </div>
+            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
+              <button type="button" id="btnTestCloudflare" class="btn btn-secondary btn-sm">Test Cloudflare Connection</button>
+              <span id="cloudflareTestResult" class="caption" style="margin-left:8px;"></span>
             </div>
           </div>
 
