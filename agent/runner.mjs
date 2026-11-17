@@ -386,6 +386,21 @@ async function runAutomation(automation, emulator) {
         actionCounts.set(actionKey, count);
         const stuckHint = count >= LOOP_DETECT_THRESHOLD;
 
+        // STUCK RECOVERY: when loop detected, override AI decision with launch(package)
+        // Tapping the same coordinates isn't working — launch the app directly by package name
+        if (stuckHint && decision.action === 'tap') {
+          const taskLower = automation.instructions.toLowerCase();
+          let targetPkg = 'com.android.vending'; // default to Play Store
+          if (taskLower.includes('calculator')) targetPkg = 'com.google.android.calculator';
+          else if (taskLower.includes('keep')) targetPkg = 'com.google.android.keep';
+          else if (taskLower.includes('setting')) targetPkg = 'com.android.settings';
+          actionsPerformed.push(`RECOVERY: loop detected on tap(${decision.x},${decision.y}) — overriding to launch(${targetPkg})`);
+          checkpoint.recoveryAction = `launch:${targetPkg}`;
+          decision.action = 'launch';
+          decision.text = targetPkg;
+          decision.app = targetPkg;
+        }
+
         let actionResult;
         let screenChanged = false;
         let lastActionError = null;
