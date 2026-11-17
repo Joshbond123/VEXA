@@ -2,11 +2,16 @@
  * VEXA — Autonomous AI Android Agent
  * Frontend application logic.
  *
- * Design principles:
- *  • All secrets (GitHub PAT, AI API keys) are handled by the backend API,
- *    never bundled or committed in frontend code.
- *  • The live device picture always comes from the gateway — never a mock.
- *  • Every user-visible action has loading/error/interactive feedback.
+ * Architecture: GitHub Pages (frontend) + GitHub Actions (backend).
+ *   • Frontend is a static site served by GitHub Pages.
+ *   • The Android emulator + gateway run inside the android-emulator GitHub Action
+ *     and publish their public URL to data/emulator.json.
+ *   • The AI agent runs inside the agent-runner GitHub Action (cron / dispatch),
+ *     using API keys stored as GitHub Secrets (never in frontend code).
+ *   • Data (automations, chats, emulator status, settings) lives in the repo's
+ *     data/ directory and is read/written via the GitHub API with the user's PAT.
+ *
+ * No secrets are bundled, committed, or exposed in frontend code.
  */
 
 (() => {
@@ -17,14 +22,10 @@
   const REPO_NAME = 'VEXA';
   const REPO_BRANCH = 'vexa';
 
-  // Backend API base. Override via window.__vexaConfig.API_BASE before app.js loads.
-  const API_BASE = (window.__vexaConfig && window.__vexaConfig.API_BASE) || '';
-  const USE_LOCAL_STORAGE_FALLBACK = !API_BASE;
-
   const PROVIDERS = [
-    { id: 'nvidia', label: 'NVIDIA NIM', model: 'nemotron-3.5-super-vl-120b', endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions' },
-    { id: 'grok', label: 'xAI Grok', model: 'grok-2-vision-1212', endpoint: 'https://api.x.ai/v1/chat/completions' },
-    { id: 'openai', label: 'OpenAI-compatible', model: 'gpt-4o-mini', endpoint: '' },
+    { id: 'nvidia', label: 'NVIDIA NIM', model: 'nemotron-3.5-super-vl-120b-a12b' },
+    { id: 'grok',   label: 'xAI Grok',   model: 'grok-2-vision-1212' },
+    { id: 'openai', label: 'OpenAI-compatible', model: 'gpt-4o-mini' },
   ];
 
   /* ------------------------------------------------------------------ state */
@@ -36,23 +37,21 @@
     executions: {},
     settings: {
       gatewayUrl: localStorage.getItem('vexa.gatewayUrl') || '',
+      githubPat: localStorage.getItem('vexa.githubPat') || '',
       provider: localStorage.getItem('vexa.provider') || 'nvidia',
-      apiKeys: [],
       keyRotation: localStorage.getItem('vexa.keyRotation') !== 'false',
     },
     streamTimer: null,
     pointerDown: null,
     providerStatus: {},
-    ui: { toastQueue: [] },
+    pendingChat: null,   // { automationId, message } awaiting agent response
+    pollTimer: null,
   };
 
   /* ------------------------------------------------------------------ dom helpers */
   const $ = (id) => document.getElementById(id);
   const on = (el, type, handler) => el && el.addEventListener(type, handler);
-  const off = (el, type, handler) => el && el.removeEventListener(type, handler);
-
   const escapeHtml = (str) => String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
   const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
   /* ------------------------------------------------------------------ toast */
@@ -64,46 +63,13 @@
     el.innerHTML = `<div style="flex:1">${escapeHtml(msg)}</div><button class="toast-close" aria-label="Dismiss">✕</button>`;
     container.appendChild(el);
     const dismiss = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); };
-    on(el.querySelector('.toast-close'), 'click', dismiss);
+    const btn = el.querySelector('.toast-close');
+    if (btn) btn.addEventListener('click', dismiss);
     setTimeout(dismiss, duration);
     return el;
   }
 
-  /* ------------------------------------------------------------------ api client */
-  async function apiRequest(path, options = {}) {
-    const base = API_BASE;
-    const url = base ? `${base.replace(/\/$/, '')}${path}` : path;
-    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-    const res = await fetch(url, { ...options, headers, signal: options.signal });
-    let data;
-    try { data = await res.json(); } catch { data = {}; }
-    if (!res.ok) {
-      const err = new Error(data.error || `Request failed (${res.status})`);
-      err.status = res.status; err.data = data; throw err;
-    }
-    return data;
-  }
-
-  async function apiGetProviders() { return apiRequest('/api/providers'); }
-  async function apiGetDeviceStatus() { return apiRequest('/api/device/status'); }
-  async function apiDeviceAction(action, params) { return apiRequest('/api/device/action', { method: 'POST', body: JSON.stringify({ action, ...params }) }); }
-  async function apiDeviceScreenshot() { return apiRequest('/api/device/screenshot'); }
-  async function apiChatStream(message, opts = {}) {
-    // Returns a ReadableStream of text chunks via SSE.
-    const res = await fetch(`${(API_BASE || '').replace(/\/$/, '')}/api/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify({ message, ...opts }),
-      signal: opts.signal,
-    });
-    if (!res.ok || !res.body) {
-      const txt = await res.text().catch(() => '');
-      throw new Error(txt || `Chat failed (${res.status})`);
-    }
-    return res.body;
-  }
-
-  /* ------------------------------------------------------------------ github storage (fallback when no backend) */
+  /* ------------------------------------------------------------------ github api (server-side-able via PAT) */
   async function ghReadJson(path, fallback) {
     try {
       const res = await fetch(`https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/${path}?t=${Date.now()}`, { cache: 'no-store' });
@@ -143,43 +109,10 @@
       body: JSON.stringify({ ref: REPO_BRANCH, inputs }),
     });
     if (!res.ok) {
-      toast(`Workflow dispatch failed (${res.status}). Check PAT scopes.`, 'err');
+      toast('Workflow dispatch failed (' + res.status + '). Check PAT has actions: write scope.', 'err');
       return false;
     }
     return true;
-  }
-
-  /* ------------------------------------------------------------------ sync & render */
-  async function syncAll() {
-    setPageLoading(true);
-    try {
-      const [autos, emu] = await Promise.all([
-        ghReadJson('data/automations.json', []),
-        ghReadJson('data/emulator.json', { gatewayUrl: '', status: 'offline' }),
-      ]);
-      state.automations = Array.isArray(autos) ? autos : [];
-      state.emulator = emu || { gatewayUrl: '', status: 'offline' };
-      if (!state.activeAutoId && state.automations.length) state.activeAutoId = state.automations[0].id;
-      $('autoCountBadge').textContent = state.automations.length;
-      renderAutomations();
-      renderChatSelector();
-      renderProviderStatus();
-      if (state.activeAutoId) await loadAutomationDetails(state.activeAutoId);
-      await checkEmulatorHealth();
-    } finally {
-      setPageLoading(false);
-    }
-  }
-
-  async function loadAutomationDetails(autoId) {
-    const [chat, execs] = await Promise.all([
-      ghReadJson(`data/chats/${autoId}.json`, []),
-      ghReadJson(`data/executions/${autoId}.json`, []),
-    ]);
-    state.chats[autoId] = Array.isArray(chat) ? chat : [];
-    state.executions[autoId] = Array.isArray(execs) ? execs : [];
-    renderChat();
-    renderReports();
   }
 
   /* ------------------------------------------------------------------ emulator / device */
@@ -193,8 +126,8 @@
       const cls = `status-pill ${online ? 'online' : 'offline'}`;
       for (const id of ['sidebarEmuStatus', 'mobileEmuStatus']) { const el = $(id); if (el) { el.className = cls; el.textContent = online ? 'Online' : 'Offline'; } }
       for (const id of ['sidebarEmuMeta', 'mobileEmuMeta']) { const el = $(id); if (el) el.textContent = text; }
-      const reason = $('phoneOfflineOverlay');
-      if (reason) reason.classList.toggle('hidden', online);
+      const overlay = $('phoneOfflineOverlay');
+      if (overlay) overlay.classList.toggle('hidden', online);
       const h = $('headerStatusText');
       if (h) h.textContent = online ? 'online' : 'offline';
       const hg = $('headerGateway');
@@ -217,7 +150,7 @@
     } catch (err) {
       setStatus(false, `Unreachable (${err.message})`);
       const reasonEl = $('phoneOfflineReason');
-      if (reasonEl) reasonEl.textContent = `Gateway ${gw} is offline or starting. Click Start Emulator to boot via GitHub Actions.`;
+      if (reasonEl) reasonEl.textContent = `Gateway ${gw} is offline or starting. Start the emulator via the GitHub Action or configure the Gateway URL in Settings.`;
     }
   }
 
@@ -234,7 +167,7 @@
         const img = await createImageBitmap(blob);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         img.close();
-      } catch { /* silent — retry next tick */ }
+      } catch { /* silent retry */ }
     };
     pullFrame();
     state.streamTimer = setInterval(pullFrame, 1500);
@@ -244,7 +177,12 @@
     const gw = getGatewayUrl();
     if (!gw) { toast('No gateway URL configured.', 'warn'); return; }
     try {
-      await apiDeviceAction(action, payload);
+      await fetch(`${gw}/api/agent/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload }),
+        signal: AbortSignal.timeout(25000),
+      });
       const badge = $('phoneLockBadge');
       if (badge) { badge.textContent = 'Active'; badge.className = 'badge status-pill running'; setTimeout(() => { badge.textContent = 'Idle'; badge.className = 'badge'; }, 1200); }
     } catch (err) {
@@ -284,8 +222,8 @@
       on(btn, 'click', () => sendPhoneAction('key', { keycode: Number(btn.dataset.key) }));
     });
 
-    on($('scrollDownBtn'), 'click', () => sendPhoneAction('swipe', { x: 540, y: 1700, x2: 540, y2: 700 }));
-    on($('scrollUpBtn') || document.createElement('button'), 'click', () => sendPhoneAction('swipe', { x: 540, y: 700, x2: 540, y2: 1700 }));
+    const scrollDown = $('scrollDownBtn');
+    if (scrollDown) on(scrollDown, 'click', () => sendPhoneAction('swipe', { x: 540, y: 1700, x2: 540, y2: 700 }));
 
     on($('manualTypeForm'), 'submit', (e) => {
       e.preventDefault();
@@ -307,7 +245,46 @@
     }
   }
 
-  /* ------------------------------------------------------------------ chat (AI) */
+  /* ------------------------------------------------------------------ sync & render */
+  async function syncAll() {
+    setPageLoading(true);
+    try {
+      const [autos, emu] = await Promise.all([
+        ghReadJson('data/automations.json', []),
+        ghReadJson('data/emulator.json', { gatewayUrl: '', status: 'offline' }),
+      ]);
+      state.automations = Array.isArray(autos) ? autos : [];
+      state.emulator = emu || { gatewayUrl: '', status: 'offline' };
+      if (!state.activeAutoId && state.automations.length) state.activeAutoId = state.automations[0].id;
+      // Mirror gateway url into settings if not set
+      if (!state.settings.gatewayUrl && state.emulator.gatewayUrl) {
+        state.settings.gatewayUrl = state.emulator.gatewayUrl;
+        localStorage.setItem('vexa.gatewayUrl', state.settings.gatewayUrl);
+      }
+      $('autoCountBadge').textContent = state.automations.length;
+      renderAutomations();
+      renderChatSelector();
+      renderProviderStatus();
+      if (state.activeAutoId) await loadAutomationDetails(state.activeAutoId);
+      await checkEmulatorHealth();
+      startChatPoll();
+    } finally {
+      setPageLoading(false);
+    }
+  }
+
+  async function loadAutomationDetails(autoId) {
+    const [chat, execs] = await Promise.all([
+      ghReadJson(`data/chats/${autoId}.json`, []),
+      ghReadJson(`data/executions/${autoId}.json`, []),
+    ]);
+    state.chats[autoId] = Array.isArray(chat) ? chat : [];
+    state.executions[autoId] = Array.isArray(execs) ? execs : [];
+    renderChat();
+    renderReports();
+  }
+
+  /* ------------------------------------------------------------------ chat (async via GitHub Actions agent) */
   function renderChatSelector() {
     const sel = $('chatAutoSelect');
     if (!sel) return;
@@ -344,9 +321,7 @@
       box.innerHTML = '<div class="chat-empty"><div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="opacity:0.5;"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"/><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 0 0-6 0"/></svg></div><div style="text-align:center;"><div style="font-weight:600;color:var(--text);margin-bottom:4px;">No messages yet</div><div class="caption">Send an instruction or click Run Now to start the agent on the live device.</div></div></div>';
       return;
     }
-    msgs.forEach((m) => {
-      appendMessage(m.role, m.content, m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
-    });
+    msgs.forEach((m) => appendMessage(m.role, m.content, m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''));
   }
 
   function addToolStep(label, detail) {
@@ -358,6 +333,11 @@
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
     return el;
+  }
+
+  function setTyping(yes) {
+    const btn = $('chatSendBtn');
+    if (btn) { btn.disabled = yes; if (yes) btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span>'; else btn.textContent = 'Send'; }
   }
 
   async function sendChatMessage(text) {
@@ -373,54 +353,49 @@
     appendMessage('user', text, new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
     // Persist user message
-    if (USE_LOCAL_STORAGE_FALLBACK) {
-      localStorage.setItem(`vexa.chat_${state.activeAutoId}`, JSON.stringify(chat));
-    } else {
-      await ghWriteJson(`data/chats/${state.activeAutoId}.json`, chat, `vexa: chat ${state.activeAutoId}`);
-    }
+    await ghWriteJson(`data/chats/${state.activeAutoId}.json`, chat, `vexa: chat ${state.activeAutoId}`);
 
     const lower = text.trim().toLowerCase();
     if (lower === 'pause' || lower === 'stop') { await window.__vexa.togglePause(state.activeAutoId); return; }
     if (lower === 'run' || lower === 'run now') { await window.__vexa.runNow(state.activeAutoId); return; }
 
-    // Stream AI response from backend
-    const agentEl = appendMessage('agent', '', '');
-    const bubble = agentEl.querySelector('.chat-bubble');
-    let collected = '';
-    try {
-      setTyping(true);
-      const stream = await apiChatStream(text, { automationId: state.activeAutoId, provider: state.settings.provider });
-      const reader = stream.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        collected += decoder.decode(value, { stream: true });
-        bubble.textContent = collected;
-        boxScroll();
-      }
-      bubble.textContent = collected;
-      // Strip internal reasoning blocks from final stored message
-      const cleaned = collected.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-      chat.push({ id: `msg_${uid()}`, role: 'agent', content: cleaned || '(no response)', timestamp: new Date().toISOString() });
-      state.chats[state.activeAutoId] = chat;
-      if (!USE_LOCAL_STORAGE_FALLBACK) await ghWriteJson(`data/chats/${state.activeAutoId}.json`, chat, `vexa: chat ${state.activeAutoId}`);
-    } catch (err) {
-      console.error('Chat stream failed:', err);
-      bubble.textContent = `[Error: ${err.message}]`;
-      toast(`AI response failed: ${err.message}`, 'err');
-      chat.push({ id: `msg_${uid()}`, role: 'agent', content: `[Error] ${err.message}`, timestamp: new Date().toISOString() });
-      state.chats[state.activeAutoId] = chat;
-    } finally {
-      setTyping(false);
+    // Queue for the GitHub Actions agent: dispatch the agent-runner workflow.
+    // The agent (running with server-side API keys from GitHub Secrets) will
+    // process the task and append its response to data/chats/<id>.json.
+    const ok = await dispatchWorkflow('agent-runner.yml', { automation_id: state.activeAutoId });
+    if (ok) {
+      toast('Agent task dispatched to GitHub Actions. It will run with server-side AI keys and report back here.', 'ok');
+      state.pendingChat = { automationId: state.activeAutoId, message: text };
+      // Start polling for the agent's response
+      startChatPoll();
     }
   }
 
-  function setTyping(yes) {
-    const btn = $('chatSendBtn');
-    if (btn) { btn.disabled = yes; if (yes) btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span>'; else btn.textContent = 'Send'; }
+  function startChatPoll() {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    if (!state.pendingChat) return;
+    let polls = 0;
+    state.pollTimer = setInterval(async () => {
+      polls++;
+      if (polls > 120) { clearInterval(state.pollTimer); state.pollTimer = null; return; } // ~10 min max
+      await checkForAgentResponse();
+    }, 5000);
+    checkForAgentResponse();
   }
-  function boxScroll() { const box = $('chatMessages'); if (box) box.scrollTop = box.scrollHeight; }
+
+  async function checkForAgentResponse() {
+    if (!state.pendingChat || !state.activeAutoId) return;
+    const chat = await ghReadJson(`data/chats/${state.activeAutoId}.json`, []);
+    const msgs = Array.isArray(chat) ? chat : [];
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === 'agent' && last.timestamp > (state.pendingChat.sentAt || 0)) {
+      // New agent response arrived
+      state.chats[state.activeAutoId] = msgs;
+      state.pendingChat = null;
+      if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+      renderChat();
+    }
+  }
 
   /* ------------------------------------------------------------------ automations UI */
   function renderAutomations() {
@@ -478,28 +453,18 @@
   async function renderProviderStatus() {
     const list = $('providerStatusList');
     if (!list) return;
-    let providers = PROVIDERS.map((p) => ({ ...p, configured: false, status: 'unknown' }));
-    try {
-      const fetched = await apiGetProviders();
-      if (fetched && Array.isArray(fetched.providers)) {
-        providers = fetched.providers.map((p) => ({ ...PROVIDERS.find((x) => x.id === p.id), ...p }));
-      } else {
-        // Fallback: configured if we have keys for it (frontend-local hint only)
-        providers = providers.map((p) => ({ ...p, configured: state.settings.apiKeys.some((k) => k.provider === p.id && k.value), status: 'unknown' }));
-      }
-    } catch {
-      // backend unavailable; show local config hint
-      providers = providers.map((p) => ({ ...p, configured: state.settings.apiKeys.some((k) => k.provider === p.id && k.value), status: 'backend_unavailable' }));
-    }
-    state.providerStatus = {};
-    providers.forEach((p) => { state.providerStatus[p.id] = p; });
-    list.innerHTML = providers.map((p) => {
-      const cls = p.configured ? 'online' : 'offline';
+    // We cannot read secret keys from the frontend (they are GitHub Secrets).
+    // Show the provider catalog; the agent uses keys from GitHub Secrets.
+    list.innerHTML = PROVIDERS.map((p) => {
+      const primary = p.id === state.settings.provider;
       return `
         <div class="key-row">
           <div style="flex:1;">
-            <div style="display:flex;justify-content:space-between;font-weight:600;color:var(--text-2);"><span>${escapeHtml(p.label)}</span><span class="status-pill ${cls}">${p.status === 'online' ? 'Online' : p.configured ? 'Configured' : 'Not configured'}</span></div>
-            <div class="caption" style="margin-top:2px;">${escapeHtml(p.model)} &#8226; ${p.endpoint || 'custom endpoint'}</div>
+            <div style="display:flex;justify-content:space-between;font-weight:600;color:var(--text-2);">
+              <span>${escapeHtml(p.label)}</span>
+              <span class="status-pill ${primary ? 'online' : 'offline'}">${primary ? 'Primary' : 'Available'}</span>
+            </div>
+            <div class="caption" style="margin-top:2px;">${escapeHtml(p.model)} &#8226; API key must be set as a GitHub Secret (NVIDIA_API_KEY / XAI_API_KEY / OPENAI_API_KEY)</div>
           </div>
         </div>
       `;
@@ -508,7 +473,6 @@
 
   /* ------------------------------------------------------------------ page loading */
   function setPageLoading(yes) {
-    // lightweight: toggle a class on body; skeletons handled per-view
     document.body.classList.toggle('loading', yes);
   }
 
@@ -589,15 +553,8 @@
 
     // Start emulator (desktop + mobile)
     const startEmu = async () => {
-      if (!state.settings.githubPat) {
-        document.querySelector('[data-view="settings"]').click();
-        const pat = $('cfgGithubPat');
-        if (pat) pat.focus();
-        toast('Enter your GitHub PAT in Settings to dispatch emulator workflows.', 'warn');
-        return;
-      }
       const ok = await dispatchWorkflow('android-emulator.yml');
-      if (ok) toast('Android Emulator workflow dispatched. The device will boot in ~2 minutes.', 'ok');
+      if (ok) toast('Android Emulator workflow dispatched. The device will boot in ~2 minutes and the gateway URL will appear here.', 'ok');
     };
     on($('startEmulatorBtn'), 'click', startEmu);
     on($('overlayStartBtn'), 'click', startEmu);
@@ -605,7 +562,6 @@
     on($('refreshAllBtn'), 'click', syncAll);
     on($('refreshTopBtn'), 'click', syncAll);
 
-    // Settings open (desktop header)
     const openSettingsBtn = $('openSettingsBtn');
     if (openSettingsBtn) on(openSettingsBtn, 'click', () => document.querySelector('[data-view="settings"]').click());
 
@@ -693,44 +649,32 @@
     const cfgGatewayUrl = $('cfgGatewayUrl');
     const cfgGithubPat = $('cfgGithubPat');
     const cfgProvider = $('cfgProvider');
-    const cfgApiKeys = $('cfgApiKeys');
     const cfgKeyRotation = $('cfgKeyRotation');
 
     if (cfgGatewayUrl) cfgGatewayUrl.value = state.settings.gatewayUrl;
-    if (cfgGithubPat) cfgGithubPat.value = localStorage.getItem('vexa.githubPat') || '';
+    if (cfgGithubPat) cfgGithubPat.value = state.settings.githubPat;
     if (cfgProvider) cfgProvider.value = state.settings.provider;
-    if (cfgApiKeys) {
-      const saved = localStorage.getItem('vexa.apiKeys');
-      cfgApiKeys.value = saved || (state.settings.apiKeys.map((k) => k.value).join('\n') || '');
-    }
     if (cfgKeyRotation) cfgKeyRotation.checked = state.settings.keyRotation;
-
-    // Provider status badges rendered via renderProviderStatus
 
     on($('settingsForm'), 'submit', (e) => {
       e.preventDefault();
       state.settings.gatewayUrl = (cfgGatewayUrl ? cfgGatewayUrl.value : '').trim();
       state.settings.githubPat = (cfgGithubPat ? cfgGithubPat.value : '').trim();
       if (cfgProvider) state.settings.provider = cfgProvider.value;
-      const rawKeys = (cfgApiKeys ? cfgApiKeys.value : '').trim();
-      const keys = rawKeys.split('\n').map((s) => s.trim()).filter(Boolean).map((value, i) => ({
-        id: `key_${Date.now()}_${i}`,
-        provider: state.settings.provider,
-        value,
-        createdAt: new Date().toISOString(),
-      }));
-      state.settings.apiKeys = keys;
       state.settings.keyRotation = cfgKeyRotation ? cfgKeyRotation.checked : true;
       localStorage.setItem('vexa.gatewayUrl', state.settings.gatewayUrl);
       localStorage.setItem('vexa.githubPat', state.settings.githubPat);
       localStorage.setItem('vexa.provider', state.settings.provider);
-      localStorage.setItem('vexa.apiKeys', rawKeys);
       localStorage.setItem('vexa.keyRotation', state.settings.keyRotation);
-      // Push keys to backend if available (server-side storage). Fail silently if no backend.
+      // Persist settings to repo (PAT-protected). AI keys are NOT stored here —
+      // they must be GitHub Secrets (NVIDIA_API_KEY, XAI_API_KEY, OPENAI_API_KEY).
       (async () => {
-        try {
-          await apiRequest('/api/settings', { method: 'POST', body: JSON.stringify({ gatewayUrl: state.settings.gatewayUrl, provider: state.settings.provider, apiKeys: keys, keyRotation: state.settings.keyRotation }) });
-        } catch { /* backend not available — keys remain in localStorage only (not bundled/committed) */ }
+        await ghWriteJson('data/settings.json', {
+          gatewayUrl: state.settings.gatewayUrl,
+          provider: state.settings.provider,
+          keyRotation: state.settings.keyRotation,
+          updatedAt: new Date().toISOString(),
+        }, 'vexa: save settings');
       })();
       const msg = $('settingsSavedMsg');
       if (msg) { msg.textContent = 'Saved'; setTimeout(() => { msg.textContent = ''; }, 2500); }
@@ -740,7 +684,6 @@
 
     setupPhoneInteraction();
     syncAll();
-    // Periodic emulator health check
     setInterval(checkEmulatorHealth, 20000);
   }
 
