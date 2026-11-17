@@ -6,6 +6,17 @@ const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.PORT || 8080);
 
 const ADB_BIN = process.env.ADB_PATH || '/usr/local/lib/android/sdk/platform-tools/adb';
+const GATEWAY_SECRET = (process.env.EMULATOR_GATEWAY_SECRET || '').trim();
+
+function isGatewayAuthOk(req) {
+  if (!GATEWAY_SECRET) return false; // secret not configured -> reject internal agent calls
+  const auth = req.headers['authorization'] || '';
+  if (typeof auth === 'string' && auth.startsWith('Bearer ')) {
+    return auth.slice(7).trim() === GATEWAY_SECRET;
+  }
+  const hdr = req.headers['x-gateway-secret'];
+  return typeof hdr === 'string' && hdr.trim() === GATEWAY_SECRET;
+}
 
 async function adb(args, encoding = 'utf8') {
   return execFileAsync(ADB_BIN, ['-s', 'emulator-5554', ...args], {
@@ -60,6 +71,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/agent/action' && req.method === 'POST') {
+    if (!isGatewayAuthOk(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Unauthorized: EMULATOR_GATEWAY_SECRET required' }));
+      return;
+    }
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {

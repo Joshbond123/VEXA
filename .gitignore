@@ -1,2 +1,14 @@
-.DS_Store
+# VEXA — secrets and runtime data (never commit credentials)
+data/settings.json
+data/provider-usage.json
+data/sessions.json
+data/emulator.json
+*.log
+.env
+.env.local
+.venv/
 node_modules/
+dist/
+build/
+*.tmp
+.DS_Store

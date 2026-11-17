@@ -1,0 +1,15 @@
+{
+  "name": "vexa-api",
+  "version": "1.0.0",
+  "description": "VEXA backend API — AI provider proxy, device control, settings",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
