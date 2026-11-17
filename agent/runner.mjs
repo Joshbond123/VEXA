@@ -326,6 +326,14 @@ async function runAutomation(automation, emulator) {
     observedResults = 'Could not connect to running Android emulator.';
   } else {
     try {
+      // Press HOME first to ensure we're on the home screen (resets any dialogs/locks)
+      try {
+        await deviceAction(emulator.gatewayUrl, 'home', {});
+        await sleep(800);
+      } catch (e) {
+        // Non-fatal — continue even if home key fails
+      }
+
       for (let step = 0; step < MAX_STEPS; step++) {
         const checkpoint = { step: step + 1, at: new Date().toISOString() };
         const screenshotB64 = await captureScreen(emulator.gatewayUrl);
@@ -403,10 +411,13 @@ async function runAutomation(automation, emulator) {
         // Tapping the same coordinates isn't working — launch the app directly by package name
         if (stuckHint && decision.action === 'tap') {
           const taskLower = automation.instructions.toLowerCase();
-          let targetPkg = 'com.android.vending'; // default to Play Store
-          if (taskLower.includes('calculator')) targetPkg = 'com.google.android.calculator';
-          else if (taskLower.includes('keep')) targetPkg = 'com.google.android.keep';
-          else if (taskLower.includes('setting')) targetPkg = 'com.android.settings';
+          let targetPkg = 'com.android.vending'; // default: Play Store (most common task)
+          if (taskLower.includes('calculator') && !taskLower.includes('play store'))
+            targetPkg = 'com.google.android.calculator';
+          else if (taskLower.includes('keep') && !taskLower.includes('play store'))
+            targetPkg = 'com.google.android.keep';
+          else if (taskLower.includes('setting'))
+            targetPkg = 'com.android.settings';
           actionsPerformed.push(`RECOVERY: loop detected on tap(${decision.x},${decision.y}) — overriding to launch(${targetPkg})`);
           checkpoint.recoveryAction = `launch:${targetPkg}`;
           decision.action = 'launch';
