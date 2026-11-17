@@ -145,7 +145,7 @@ Respond ONLY with valid JSON:
   }
 
   const json = await res.json();
-  const raw = json.choices?.[0]?.message?.content || '';
+  const raw = (json.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error(`Agent returned non-JSON: ${raw.slice(0, 200)}`);
   return JSON.parse(match[0]);
@@ -170,7 +170,7 @@ async function runAutomation(automation, emulator) {
     observedResults = 'Could not connect to running Android emulator.';
   } else {
     try {
-      for (let step = 0; step < 15; step++) {
+      for (let step = 0; step < 25; step++) {
         const screenshotB64 = await captureScreen(emulator.gatewayUrl);
         const decision = await askAgentBrain({
           task: automation.instructions,

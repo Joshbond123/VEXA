@@ -386,8 +386,14 @@
 
     // Start Emulator
     const startEmu = async () => {
+      if (!state.settings.githubPat) {
+        document.querySelector('[data-view="settings"]').click();
+        $('cfgGithubPat').focus();
+        $('settingsSavedMsg').textContent = 'Enter your GitHub PAT to dispatch workflows.';
+        return;
+      }
       const ok = await dispatchWorkflow('android-emulator.yml');
-      if (ok) alert('Android Emulator workflow dispatched! It will boot in ~2-3 minutes.');
+      if (ok) alert('Android Emulator workflow dispatched! It will boot in ~2 minutes.');
     };
     $('startEmulatorBtn').addEventListener('click', startEmu);
     $('overlayStartBtn').addEventListener('click', startEmu);
@@ -487,17 +493,21 @@
     // Settings
     $('cfgGatewayUrl').value = state.settings.gatewayUrl;
     $('cfgGithubPat').value = state.settings.githubPat;
-    $('cfgNvidiaKey').value = state.settings.nvidiaKey;
+    if ($('cfgProvider')) $('cfgProvider').value = localStorage.getItem('vexa.provider') || 'nvidia';
+    if ($('cfgApiKeys')) $('cfgApiKeys').value = localStorage.getItem('vexa.apiKeys') || state.settings.nvidiaKey || '';
 
     $('settingsForm').addEventListener('submit', (e) => {
       e.preventDefault();
       state.settings.gatewayUrl = $('cfgGatewayUrl').value.trim();
       state.settings.githubPat = $('cfgGithubPat').value.trim();
-      state.settings.nvidiaKey = $('cfgNvidiaKey').value.trim();
+      const apiKeys = $('cfgApiKeys') ? $('cfgApiKeys').value.trim() : '';
+      state.settings.nvidiaKey = apiKeys.split('\n')[0]?.trim() || '';
       localStorage.setItem('vexa.gatewayUrl', state.settings.gatewayUrl);
       localStorage.setItem('vexa.githubPat', state.settings.githubPat);
       localStorage.setItem('vexa.nvidiaKey', state.settings.nvidiaKey);
-      $('settingsSavedMsg').textContent = '✓ Saved locally';
+      if ($('cfgProvider')) localStorage.setItem('vexa.provider', $('cfgProvider').value);
+      localStorage.setItem('vexa.apiKeys', apiKeys);
+      $('settingsSavedMsg').textContent = 'Saved locally';
       checkEmulatorHealth();
     });
 

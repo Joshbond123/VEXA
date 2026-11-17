@@ -13,7 +13,9 @@
   <div id="app" class="app-shell">
     <!-- Mobile Header -->
     <header class="mobile-header">
-      <button id="mobileMenuBtn" class="icon-btn" aria-label="Toggle Menu">☰</button>
+      <button id="mobileMenuBtn" class="icon-btn" aria-label="Toggle Menu">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
       <div class="brand">
         <span class="brand-dot"></span>
         <span class="brand-name">VEXA</span>
@@ -29,26 +31,28 @@
           <span class="brand-name">VEXA</span>
           <span class="brand-tag">OS</span>
         </div>
-        <button id="closeSidebarBtn" class="icon-btn mobile-only" aria-label="Close">✕</button>
+        <button id="closeSidebarBtn" class="icon-btn mobile-only" aria-label="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <nav class="nav-list">
         <button class="nav-item active" data-view="dashboard">
-          <span class="nav-icon">⚡</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           <span>Live Workspace</span>
         </button>
         <button class="nav-item" data-view="automations">
-          <span class="nav-icon">🤖</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
           <span>Automations</span>
           <span id="autoCountBadge" class="nav-badge">0</span>
         </button>
         <button class="nav-item" data-view="history">
-          <span class="nav-icon">📊</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
           <span>Execution Reports</span>
         </button>
         <button class="nav-item" data-view="settings">
-          <span class="nav-icon">⚙️</span>
-          <span>Settings & Secrets</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>AI &amp; Settings</span>
         </button>
       </nav>
 
@@ -58,9 +62,10 @@
             <span class="label">Emulator</span>
             <span id="sidebarEmuStatus" class="status-pill offline">Offline</span>
           </div>
-          <div class="emu-meta" id="sidebarEmuMeta">No gateway connected</div>
+          <div class="emu-meta" id="sidebarEmuMeta">Checking gateway...</div>
           <button id="startEmulatorBtn" class="btn btn-primary btn-sm w-full">
-            ▶ Start Emulator (GHA)
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Start Emulator
           </button>
         </div>
       </div>
@@ -73,10 +78,10 @@
         <div class="view-header">
           <div>
             <h1>Live Workspace</h1>
-            <p class="subtitle">Real-time Android emulator + autonomous AI agent control</p>
+            <p class="subtitle">Droidrun-powered autonomous Android agent + real-time device stream</p>
           </div>
           <div class="header-actions">
-            <button id="refreshAllBtn" class="btn btn-ghost">↻ Sync Repo</button>
+            <button id="refreshAllBtn" class="btn btn-ghost">Sync Repo</button>
             <button id="newAutoQuickBtn" class="btn btn-primary">+ New Automation</button>
           </div>
         </div>
@@ -90,7 +95,7 @@
                 <span id="phoneLockBadge" class="badge badge-neutral">Idle</span>
               </div>
               <div class="card-actions">
-                <button id="expandPhoneBtn" class="btn btn-ghost btn-sm" title="Larger View">⤢ Expand</button>
+                <button id="expandPhoneBtn" class="btn btn-ghost btn-sm" title="Full Screen">Expand</button>
               </div>
             </div>
 
@@ -99,23 +104,22 @@
                 <canvas id="phoneCanvas" width="1080" height="2400"></canvas>
                 <div id="phoneOfflineOverlay" class="phone-overlay">
                   <div class="overlay-box">
-                    <div class="overlay-icon">📱</div>
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:8px;opacity:0.7"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
                     <h3>Emulator Offline</h3>
                     <p id="phoneOfflineReason">Start the Android Emulator workflow or configure your VEXA Gateway URL in Settings.</p>
-                    <button id="overlayStartBtn" class="btn btn-primary btn-sm">▶ Start Emulator</button>
+                    <button id="overlayStartBtn" class="btn btn-primary btn-sm">Start Emulator</button>
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- Manual Controls -->
             <div class="phone-controls">
               <div class="nav-keys">
-                <button class="btn btn-ghost btn-sm" data-key="4" title="Back">◀ Back</button>
-                <button class="btn btn-ghost btn-sm" data-key="3" title="Home">● Home</button>
-                <button class="btn btn-ghost btn-sm" data-key="187" title="Recents">■ Recents</button>
-                <button class="btn btn-ghost btn-sm" id="scrollDownBtn" title="Scroll Down">↓ Scroll</button>
-                <button class="btn btn-ghost btn-sm" id="scrollUpBtn" title="Scroll Up">↑ Scroll</button>
+                <button class="btn btn-ghost btn-sm" data-key="4">Back</button>
+                <button class="btn btn-ghost btn-sm" data-key="3">Home</button>
+                <button class="btn btn-ghost btn-sm" data-key="187">Recents</button>
+                <button class="btn btn-ghost btn-sm" id="scrollDownBtn">Scroll Down</button>
+                <button class="btn btn-ghost btn-sm" id="scrollUpBtn">Scroll Up</button>
               </div>
               <form id="manualTypeForm" class="type-bar">
                 <input id="manualTypeInput" type="text" placeholder="Type text to Android..." autocomplete="off" />
@@ -124,7 +128,7 @@
             </div>
           </div>
 
-          <!-- Right: Active Automation Chat & Agent Monitor -->
+          <!-- Right: ChatGPT/Grok-style Automation Chat -->
           <div class="card chat-panel">
             <div class="card-header">
               <div class="card-title-group">
@@ -132,9 +136,9 @@
                 <span id="chatAutoStatus" class="status-pill idle">Idle</span>
               </div>
               <div class="card-actions">
-                <button id="chatRunNowBtn" class="btn btn-primary btn-sm">▶ Run Now</button>
-                <button id="chatPauseBtn" class="btn btn-ghost btn-sm">⏸ Pause</button>
-                <button id="chatStopBtn" class="btn btn-danger btn-sm">■ Stop</button>
+                <button id="chatRunNowBtn" class="btn btn-primary btn-sm">Run Now</button>
+                <button id="chatPauseBtn" class="btn btn-ghost btn-sm">Pause</button>
+                <button id="chatStopBtn" class="btn btn-danger btn-sm">Stop</button>
               </div>
             </div>
 
@@ -143,7 +147,7 @@
             </div>
 
             <form id="chatForm" class="chat-input-bar">
-              <input id="chatInput" type="text" placeholder="Give instructions, ask for a report, or say 'pause' / 'run now'..." autocomplete="off" />
+              <input id="chatInput" type="text" placeholder="Message VEXA (e.g. 'Open Play Store and install...', 'pause', 'run now')..." autocomplete="off" />
               <button type="submit" class="btn btn-primary">Send</button>
             </form>
           </div>
@@ -155,7 +159,7 @@
         <div class="view-header">
           <div>
             <h1>Automations</h1>
-            <p class="subtitle">Scheduled & on-demand autonomous tasks persisted in GitHub</p>
+            <p class="subtitle">Scheduled &amp; on-demand autonomous tasks persisted in GitHub</p>
           </div>
           <button id="createAutoBtn" class="btn btn-primary">+ Create Automation</button>
         </div>
@@ -167,35 +171,43 @@
         <div class="view-header">
           <div>
             <h1>Execution Reports</h1>
-            <p class="subtitle">Verified action logs, observed results, and schedules</p>
+            <p class="subtitle">Verified Droidrun action logs, observed results, and schedules</p>
           </div>
         </div>
         <div id="reportsList" class="reports-list"></div>
       </section>
 
-      <!-- View: Settings -->
+      <!-- View: Settings & AI Providers -->
       <section id="view-settings" class="view">
         <div class="view-header">
           <div>
-            <h1>Settings & Secrets</h1>
-            <p class="subtitle">Stored locally in your browser (never committed to GitHub)</p>
+            <h1>AI Providers &amp; Settings</h1>
+            <p class="subtitle">Multi-provider key rotation, quota tracking, and repository sync</p>
           </div>
         </div>
         <form id="settingsForm" class="card settings-card">
           <div class="form-group">
             <label for="cfgGatewayUrl">VEXA Emulator Gateway URL</label>
-            <input id="cfgGatewayUrl" type="url" placeholder="https://your-vexa-gateway.example.com" />
-            <small>Populated automatically from <code>data/emulator.json</code> when the GitHub Actions emulator is running.</small>
+            <input id="cfgGatewayUrl" type="url" placeholder="https://your-vexa-gateway.trycloudflare.com" />
+            <small>Synced automatically from <code>data/emulator.json</code> when the GitHub Actions emulator is running.</small>
           </div>
           <div class="form-group">
             <label for="cfgGithubPat">GitHub Personal Access Token (repo + workflow)</label>
             <input id="cfgGithubPat" type="password" placeholder="github_pat_..." />
-            <small>Required to persist automations, chats, and trigger GitHub Actions workflows.</small>
+            <small>Stored only in your browser <code>localStorage</code> to persist automations and trigger workflows.</small>
           </div>
           <div class="form-group">
-            <label for="cfgNvidiaKey">NVIDIA NIM API Key</label>
-            <input id="cfgNvidiaKey" type="password" placeholder="nvapi-..." />
-            <small>Used for in-browser chat intent parsing and optional local agent runs.</small>
+            <label for="cfgProvider">Primary AI Provider</label>
+            <select id="cfgProvider">
+              <option value="nvidia">NVIDIA NIM (nemotron-3.5-super-vl-120b)</option>
+              <option value="grok">xAI Grok (grok-2-vision)</option>
+              <option value="openai">OpenAI-Compatible</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="cfgApiKeys">Provider API Keys (one per line for automatic rotation &amp; fallback)</label>
+            <textarea id="cfgApiKeys" rows="3" placeholder="nvapi-...&#10;xai-..."></textarea>
+            <small>VEXA rotates keys per request and automatically fails over on rate limits (HTTP 429).</small>
           </div>
           <div class="form-actions">
             <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -218,7 +230,7 @@
         <input type="hidden" id="autoEditId" />
         <div class="form-group">
           <label for="autoName">Automation Name</label>
-          <input id="autoName" type="text" required placeholder="e.g., Check Gmail & Summarize" />
+          <input id="autoName" type="text" required placeholder="e.g., Install App from Play Store" />
         </div>
         <div class="form-group">
           <label for="autoInstructions">Natural-Language Instructions</label>
