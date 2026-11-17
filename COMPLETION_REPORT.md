@@ -2,9 +2,9 @@
 
 **Platform:** VEXA — Autonomous AI Android Agent
 **Branch:** `vexa`
-**Commit:** `a6e0bee` (pushed to GitHub — https://github.com/Joshbond123/VEXA/tree/vexa)
+**Commit:** `dcbdc4c` (pushed to GitHub — https://github.com/Joshbond123/VEXA/tree/vexa)
 **Date:** 2026-11-17
-**Environment:** Linux sandbox, Node 20.20.2, Python 3.13.18 (no KVM/adb/Android device, GitHub PAT now configured)
+**Environment:** Linux sandbox, Node 20.20.2, Python 3.13.18 (no KVM/adb/Android device directly; GitHub Actions runs real Pixel 7 Android 14 emulator via cloudflared tunnel; all 5 GitHub Secrets configured)
 **Architecture:** GitHub Actions (backend) + GitHub Pages (frontend) — no Blitz cloud
 
 ---
@@ -218,23 +218,25 @@ No tests were fabricated. Tests requiring real credentials/devices are documente
 - **GitHub PAT configured** — code pushed to `https://github.com/Joshbond123/VEXA.git` branch `vexa` (commit `a6e0bee`).
 - **NVIDIA API key verified** — AI chat works end-to-end through `/api/chat/completions`.
 
-### Remaining deployment steps (need GitHub Secrets configured)
-To enable GitHub Actions workflows (Android emulator boot, AI agent runner, Pages deploy), the following GitHub Secrets must be set in the repo settings:
-- `NVIDIA_API_KEY` = `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`
-- `XAI_API_KEY` = (xAI Grok key — not yet available)
-- `OPENAI_API_KEY` = (OpenAI-compatible key — not yet available)
-- `EMULATOR_ACCESS_TOKEN` = (for viewer/control WebSocket auth)
-- `EMULATOR_GATEWAY_SECRET` = (for gateway auth)
+### Deployment status
+- **All 5 GitHub Secrets configured** — NVIDIA_API_KEY, EMULATOR_ACCESS_TOKEN, EMULATOR_GATEWAY_SECRET, GH_PAT, EMULATOR_STATE_KEY (HTTP 204/201 via set-secrets.js)
+- **GitHub PAT configured** — code pushed to `https://github.com/Joshbond123/VEXA.git` branch `vexa` (commit `dcbdc4c`)
+- **NVIDIA API key verified** — AI chat works end-to-end through `/api/chat/completions` with `nvidia/nemotron-3.5-super-vl-120b-a12b`
+- **GitHub Pages deployed** — live at https://joshbond123.github.io/VEXA/ (pages.yml run 26: success)
+- **Android emulator workflow** — Run 16 success; gateway live at https://sharp-municipality-mercury-proposition.trycloudflare.com, active_emulator_connected: true, Pixel 7 Android 14, streaming: true
+- **Whole-AVD persistence** — save-whole-avd.sh/restore-whole-avd.sh integrated into android-emulator.yml; save on shutdown, restore on boot (needs live rotation-cycle test)
 
-Then trigger the workflows:
-1. **android-emulator.yml** — boots Pixel 7 Android 14 emulator, starts gateway, publishes URL to `data/emulator.json`
-2. **agent-runner.yml** — runs autonomous agent with server-side keys (cron */15 + workflow_dispatch)
+### Remaining deployment steps
+1. **android-emulator.yml** — boots Pixel 7 Android 14 emulator, starts gateway, publishes URL to `data/emulator.json` (scheduled every 4 hours + workflow_dispatch)
+2. **agent-runner.yml** — runs autonomous agent with server-side keys (cron */15 + workflow_dispatch); E2E test hit 15-min Actions timeout — needs MAX_STEPS reduction or provider timeout tuning for full verification
 3. **pages.yml** — deploys frontend to GitHub Pages (`https://joshbond123.github.io/VEXA/`)
 
 ### Remaining blockers
-- No Android device/emulator + adb/KVM → genuine mobilerun operations cannot be demonstrated (documented blocker)
-- No XAI_API_KEY/OPENAI_API_KEY → Grok/OpenAI provider fallback cannot be live-tested
-- No GitHub Pages deploy credentials → frontend not yet published to production URL
+- No XAI_API_KEY/OPENAI_API_KEY → Grok/OpenAI provider fallback cannot be live-tested (NVIDIA verified)
+- Agent-runner E2E test hit GitHub Actions 15-minute timeout → needs MAX_STEPS reduction or provider timeout tuning
+- Whole-AVD persistence not yet live-tested → needs a full emulator rotation cycle to verify save/restore
+- Play Store + Google account persistence not yet verified → first boot has no checkpoint; needs encrypted Release storage test
+- Browser/device lab unavailable → Responsive layout verified via CSS + server load only, not real devices
 
 ---
 
@@ -242,12 +244,11 @@ Then trigger the workflows:
 
 | Blocker | Impact | Needed to unblock |
 |---------|--------|-------------------|
-| No NVIDIA/XAI/OpenAI API keys | AI chat and provider fallback cannot be end-to-end tested with real models | Real API keys via GitHub Secrets |
-| No Android device/emulator + adb/KVM | mobilerun genuine operations (screenshot, tap, install app, Play Store task) cannot be demonstrated | Connected Android device or emulator with USB debugging |
-| No GitHub PAT | Cannot push commit to GitHub; cannot run Actions workflows (emulator boot, agent runner, Pages deploy) | PAT with `repo` + `workflow` scope |
-| No GitHub Pages deploy credentials | Frontend not live on a production URL | Pages deployment permissions |
-| Full whole-AVD encrypted persistence (VIBELY pattern) not wired | Play Store + Google account persistence across runner restarts not verified | `EMULATOR_STATE_KEY`, `GH_PAT` (release write), GitHub Releases |
-| Browser/device lab unavailable | Responsive layout verified via CSS + server load only, not real devices | Physical/emulated device testing |
+| No XAI_API_KEY/OPENAI_API_KEY | Grok/OpenAI provider fallback cannot be live-tested | Real API keys via GitHub Secrets |
+| Agent-runner 15-min Actions timeout | E2E multi-step agent test cannot complete within workflow limit | Reduce MAX_STEPS or increase timeout-minutes |
+| Whole-AVD persistence not yet live-tested | Save/restore across emulator rotation not verified | Full rotation cycle with EMULATOR_STATE_KEY + GH_PAT |
+| Play Store + Google account persistence not verified | First boot has no checkpoint; account not yet persisted | Encrypted GitHub Release storage test |
+| Browser/device lab unavailable | Responsive layout verified via CSS + server load only | Physical/emulated device testing |
 
 Nothing in this report is fabricated: every "fixed and verified" claim is backed by a syntax check, unit test, or live local test; every item depending on an external service is honestly marked verification-incomplete with the exact missing resource listed.
 
@@ -259,15 +260,20 @@ Nothing in this report is fabricated: every "fixed and verified" claim is backed
 - `index.html` — professional SPA shell
 - `assets/app.css` — design system + components
 - `assets/app.js` — app logic, GitHub-native data access, device controls, settings
-- `agent/runner.mjs` — agent rewrite (providers, fallback, verification, outcome-based completion)
-- `android-emulator/vexa-bridge.mjs` — gateway device-action endpoint
+- `agent/runner.mjs` — agent rewrite (providers, fallback, screen-change verification, outcome-based completion)
+- `android-emulator/vexa-bridge.mjs` — gateway device-action endpoint with ADB retry + auto-serial detection
+- `vexa-api/android/mobilerun_bridge.py` — mobilerun bridge (bind 0.0.0.0, connection retry)
 - `.gitignore` — secrets/runtime-data protection
+- `.github/workflows/android-emulator.yml` — fixed ordering (emulator boots first, bridge after); whole-AVD persistence (save on shutdown, restore on boot)
+- `.github/workflows/agent-runner.yml` — added all required env vars (MOBILERUN_BRIDGE, MAX_STEPS, SCREEN_CHANGE_RETRIES, SCREEN_CHANGE_BACKOFF_MS)
+- `.github/workflows/pages.yml` — frontend deployment guard
 
 **Created:**
+- `android-emulator/run-emulator-session.sh` — emulator session script (bridge, tunnel, publish URL, keep-alive, save checkpoint on shutdown)
+- `set-secrets.js` — reads GitHub Actions secrets from env vars (no hardcoded credentials; push-protection compliant)
 - `BUG_TRACKING.md` — per-bug status checklist
 - `test_bugfixes.mjs` — 14 assertion bug-fix verification suite
 - `COMPLETION_REPORT.md` — this report
 
 **Legacy (retained, not part of primary deployment path):**
 - `vexa-api/server.js` — Express backend API (superseded by GitHub Actions backend)
-- `vexa-api/android/mobilerun_bridge.py` — mobilerun HTTP bridge (superseded by vexa-bridge.mjs + mobilerun in runner)
