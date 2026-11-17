@@ -34,9 +34,6 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       ANDROID_STATE_BRANCH: android-state-v1
       AVD_NAME: vexa_pixel_7_api34
-      ANDROID_AVD_HOME: ${{ runner.temp }}/android-avd
-      ANDROID_HOME: ${{ runner.temp }}/android-sdk
-      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
     steps:
       - name: Checkout VEXA
@@ -66,6 +63,7 @@ jobs:
         if: env.EMULATOR_STATE_KEY != '' && env.GH_PAT != ''
         run: |
           export PYTHONPATH="$PWD/android-emulator${PYTHONPATH:+:$PYTHONPATH}"
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
           bash "$PWD/android-emulator/restore-whole-avd.sh" || true
         env:
           AVD_NAME: vexa_pixel_7_api34
@@ -162,6 +160,7 @@ jobs:
             if [ "${EMULATOR_STATE_KEY:-}" != "" ] && [ "${GH_PAT:-}" != "" ]; then
               echo "[save-checkpoint] Capturing whole-AVD checkpoint before shutdown..."
               export PYTHONPATH="$PWD/android-emulator${PYTHONPATH:+:$PYTHONPATH}"
+              export ANDROID_AVD_HOME="$HOME/.android/avd"
               export CHECKPOINT_HOLD=true
               bash "$PWD/android-emulator/save-whole-avd.sh" || echo "[save-checkpoint] WARNING: checkpoint save failed (non-fatal)"
             else
