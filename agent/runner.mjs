@@ -11,12 +11,14 @@
  *   • Perceptual screenshot similarity (hash-based) instead of byte-for-byte
  *     comparison — no false "unchanged" detections from PNG compression variance
  *   • Step deduplication / loop detection — same action+coords 3+ times triggers
- *     a different approach instead of endless repetition
+ *     a stuck hint so the AI tries a different approach
  *   • Early exit if no meaningful progress after N steps
  *   • Mobilerun bridge fast-fail — skips when unreachable instead of 30s timeout
  *   • Reduced delays: STEP_DELAY_MS=500, SCREEN_CHANGE_BACKOFF_MS=1000
  *   • MAX_STEPS=15 (fits within 55-min Actions window)
  *   • NVIDIA timeout reduced to 30s
+ *   • Longer delay after app-launch actions (apps need 2-3s to open)
+ *   • More lenient screen-change threshold (hash diff >1 instead of >2)
  *   • scheduleType 'once' automations with status='failed' re-run when manually
  *     dispatched via TARGET_AUTOMATION_ID
  */
@@ -51,9 +53,8 @@ const MAX_STEPS = Number(process.env.MAX_STEPS || '15');
 const STEP_DELAY_MS = Number(process.env.STEP_DELAY_MS || '500');
 const SCREEN_CHANGE_RETRIES = Number(process.env.SCREEN_CHANGE_RETRIES || '2');
 const SCREEN_CHANGE_BACKOFF_MS = Number(process.env.SCREEN_CHANGE_BACKOFF_MS || '1000');
-// Loop detection: same action at same coords N+ times = stuck
+const LAUNCH_EXTRA_DELAY_MS = Number(process.env.LAUNCH_EXTRA_DELAY_MS || '2500');
 const LOOP_DETECT_THRESHOLD = Number(process.env.LOOP_DETECT_THRESHOLD || '3');
-// Early exit: no progress (new screen + new action) for N steps
 const NO_PROGRESS_STEPS = Number(process.env.NO_PROGRESS_STEPS || '5');
 
 const PROVIDERS = [
@@ -107,11 +108,8 @@ async function fetchWithTimeout(url, opts = {}) {
 
 /* ------------------------------------------------------------------ screenshot similarity (perceptual hash) */
 function imageHash(base64) {
-  // Simple perceptual hash: downsample to 8x8 grayscale, compare to mean
   try {
     const buf = Buffer.from(base64, 'base64');
-    // Use first 64 bytes of PNG pixel data as a rough fingerprint (fast, no dep)
-    // For better accuracy we'd decode PNG, but this is sufficient for change detection
     const sample = buf.slice(0, 64);
     let hash = '';
     for (let i = 0; i < sample.length; i++) {
@@ -298,7 +296,7 @@ async function callProvider(provider, messages, attempt = 1) {
 
 async function askAgentBrain({ task, history, stepIndex, screenshotBase64, deviceState, stuckHint }) {
   const stuckSection = stuckHint
-    ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without progress. Try a DIFFERENT approach (different coordinates, different action, or navigate away first).\n`
+    ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without progress. Try a DIFFERENT approach (different coordinates, swipe instead of tap, use search bar, or press Home first).\n`
     : '';
 
   const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach rather than repeating the same action.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
@@ -434,8 +432,11 @@ async function runAutomation(automation, emulator) {
             });
             lastActionError = null;
 
-            // Wait for the device to settle
-            await sleep(STEP_DELAY_MS);
+            // Wait for the device to settle — longer after app launches
+            const settleMs = (decision.action === 'launch' || decision.action === 'type')
+              ? STEP_DELAY_MS + LAUNCH_EXTRA_DELAY_MS
+              : STEP_DELAY_MS;
+            await sleep(settleMs);
 
             // Re-capture screen AFTER action to verify screen change
             const postScreenshot = await captureScreen(emulator.gatewayUrl);
@@ -445,9 +446,9 @@ async function runAutomation(automation, emulator) {
             checkpoint.postScreenshotBytes = postScreenshot.length;
             checkpoint.postDeviceState = postState;
 
-            // Perceptual similarity: screens are "changed" if hash differs by >2 bits
+            // Perceptual similarity: screens are "changed" if hash differs by >1 bit
             const diff = hammingDistance(screenHash, postHash);
-            if (diff > 2) {
+            if (diff > 1) {
               screenChanged = true;
               break; // screen changed — action had effect
             }
