@@ -23,7 +23,7 @@ jobs:
   run-emulator:
     name: Boot Android Emulator & Expose Gateway
     runs-on: ubuntu-latest
-    timeout-minutes: 390
+    timeout-minutes: 360
     env:
       EMULATOR_ACCESS_TOKEN: ${{ secrets.EMULATOR_ACCESS_TOKEN }}
       EMULATOR_GATEWAY_SECRET: ${{ secrets.EMULATOR_GATEWAY_SECRET }}
@@ -59,14 +59,16 @@ jobs:
           sudo chmod +x /usr/local/bin/cloudflared
           cd android-emulator && npm ci
 
-      - name: Restore whole-AVD checkpoint from GitHub Release (if available)
+      - name: Restore whole-AVD checkpoint from VIBELY (Google account pre-provisioned)
         if: env.EMULATOR_STATE_KEY != '' && env.GH_PAT != ''
         run: |
           export PYTHONPATH="$PWD/android-emulator${PYTHONPATH:+:$PYTHONPATH}"
           export ANDROID_AVD_HOME="$HOME/.android/avd"
-          bash "$PWD/android-emulator/restore-whole-avd.sh" || true
+          # Restore from VIBELY repo which has the pre-provisioned AVD with Google account
+          GITHUB_REPOSITORY=Joshbond123/VIBELY bash "$PWD/android-emulator/restore-whole-avd.sh" || true
         env:
           AVD_NAME: vexa_pixel_7_api34
+          ANDROID_STATE_BRANCH: android-state-v1
 
       - name: Boot Android Emulator (Pixel 7, Android 14, Play Store)
         uses: reactivecircus/android-emulator-runner@v2

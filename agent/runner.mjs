@@ -453,6 +453,34 @@ async function runAutomation(automation, emulator) {
 
         if (decision.app) appsInteracted.add(decision.app);
 
+        // --- NORMALIZE MALFORMED AI ACTIONS ---
+        // AI sometimes returns combined strings like "tap(151,664)" or "launch(com.android.vending)"
+        // Parse them into proper action + params
+        if (decision.action && typeof decision.action === 'string') {
+          const actionMatch = decision.action.match(/^(\w+)\((.+)\)$/);
+          if (actionMatch) {
+            const parsedAction = actionMatch[1];
+            const parsedArgs = actionMatch[2];
+            // Only override if the current action doesn't already have proper x/y
+            if (!decision.x && !decision.y && !decision.text && !decision.app) {
+              if (parsedAction === 'tap' || parsedAction === 'swipe') {
+                const coords = parsedArgs.split(',').map(c => Number(c.trim()));
+                if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+                  console.warn(`Normalizing malformed action "${decision.action}" → tap(${coords[0]},${coords[1]})`);
+                  decision.action = parsedAction;
+                  decision.x = coords[0];
+                  decision.y = coords[1];
+                }
+              } else if (parsedAction === 'launch') {
+                console.warn(`Normalizing malformed action "${decision.action}" → launch(${parsedArgs})`);
+                decision.action = parsedAction;
+                decision.text = parsedArgs.trim();
+                decision.app = parsedArgs.trim();
+              }
+            }
+          }
+        }
+
         if (decision.action === 'done') {
           outcomeAchieved = Boolean(decision.outcomeAchieved === true);
           observedResults = decision.summary || decision.thought || 'Task completed.';
@@ -553,10 +581,45 @@ async function runAutomation(automation, emulator) {
         const desc = `${decision.action}(${decision.text || `${decision.x},${decision.y}`})`;
         actionsPerformed.push(`${desc} — ${decision.thought}` + (screenChanged ? ' [screen changed]' : ' [screen unchanged after retries]') + (stuckHint ? ' [LOOP DETECTED]' : ''));
 
-        if (!screenChanged && decision.action !== 'launch') {
+        // --- AGGRESSIVE STUCK RECOVERY ---
+        // If screen didn't change after all retries AND the action was a tap,
+        // override with launch(package) to break out of the deadlock
+        if (!screenChanged && decision.action === 'tap') {
+          const taskLower = automation.instructions.toLowerCase();
+          let targetPkg = 'com.android.vending';
+          if (taskLower.includes('calculator') && !taskLower.includes('play store'))
+            targetPkg = 'com.google.android.calculator';
+          else if (taskLower.includes('keep') && !taskLower.includes('play store'))
+            targetPkg = 'com.google.android.keep';
+          else if (taskLower.includes('setting'))
+            targetPkg = 'com.android.settings';
+          console.warn(`STUCK RECOVERY: tap(${decision.x},${decision.y}) produced no screen change — overriding to launch(${targetPkg})`);
+          actionsPerformed.push(`RECOVERY: tap(${decision.x},${decision.y}) stuck — overriding to launch(${targetPkg})`);
+          checkpoint.recoveryAction = `launch:${targetPkg}`;
+          checkpoint.stuckRecovery = true;
+          // Try launching the app directly
+          try {
+            await deviceAction(emulator.gatewayUrl, 'launch', { app: targetPkg, text: targetPkg });
+            await sleep(LAUNCH_EXTRA_DELAY_MS);
+            // Verify screen changed after launch
+            const postLaunchScreenshot = await captureScreen(emulator.gatewayUrl);
+            if (screensDiffer(screenshotB64, postLaunchScreenshot)) {
+              screenChanged = true;
+              lastActionError = null;
+              observedResults = `Recovery launch(${targetPkg}) succeeded — screen changed.`;
+              actionsPerformed.push(`RECOVERY: launch(${targetPkg}) — screen changed ✅`);
+            } else {
+              observedResults = `Recovery launch(${targetPkg}) attempted but screen unchanged.`;
+            }
+          } catch (launchErr) {
+            observedResults = `Recovery launch(${targetPkg}) failed: ${launchErr.message}`;
+          }
+        }
+
+        if (!screenChanged && decision.action !== 'launch' && !checkpoint.stuckRecovery) {
           failures = (failures ? failures + '; ' : '') + `Step ${step + 1} (${decision.action}) did not change screen after ${SCREEN_CHANGE_RETRIES + 1} attempts: ${lastActionError || 'unknown'}`;
           observedResults = `Action ${desc} did not produce a visible screen change after ${SCREEN_CHANGE_RETRIES + 1} attempts.`;
-        } else {
+        } else if (screenChanged && !checkpoint.stuckRecovery) {
           observedResults = `Action ${desc} executed. Post-action screen captured (${checkpoint.postScreenshotBytes} bytes). Device state: ${JSON.stringify(checkpoint.postDeviceState || {}).slice(0, 300)} [screen changed — action had effect]`;
         }
 

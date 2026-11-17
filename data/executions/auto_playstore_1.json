@@ -1,5 +1,132 @@
 [
   {
+    "id": "exec_1794917059216_0soza",
+    "automationId": "auto_playstore_1",
+    "status": "failed",
+    "startedAt": "2026-11-17T12:04:19.215Z",
+    "finishedAt": "2026-11-17T12:04:19.619Z",
+    "taskReceived": "Open Google Play Store on the Android phone. If a 'Complete account setup' or 'Add a payment option' gate appears, tap Skip to dismiss it. Then search for 'Google Keep' in the Play Store, install it, open Google Keep, create a new note with title 'VEXA Test Note' and body 'VEXA autonomous agent test successful', save the note, and report what you observed at each step.",
+    "actionsPerformed": [],
+    "appsInteracted": [],
+    "observedResults": "Could not connect to running Android emulator.",
+    "outcomeAchieved": false,
+    "failures": "Android emulator gateway is offline (HTTP 530). Start the Android Emulator workflow first.",
+    "checkpoints": [],
+    "nextExecutionScheduled": null,
+    "resuming": false
+  },
+  {
+    "id": "exec_1794916923308_07yub",
+    "automationId": "auto_playstore_1",
+    "status": "failed",
+    "startedAt": "2026-11-17T12:02:03.277Z",
+    "finishedAt": "2026-11-17T12:03:16.385Z",
+    "taskReceived": "Open Google Play Store on the Android phone. If a 'Complete account setup' or 'Add a payment option' gate appears, tap Skip to dismiss it. Then search for 'Google Keep' in the Play Store, install it, open Google Keep, create a new note with title 'VEXA Test Note' and body 'VEXA autonomous agent test successful', save the note, and report what you observed at each step.",
+    "actionsPerformed": [
+      "tap(151,664) — The task is to open Google Play Store, then search for Google Keep, install it, open it, and create a note. I can see the Play Store app icon on the home screen. The first step is to tap on the Play Store icon to launch it. [screen unchanged after retries]",
+      "tap(151,664) — The screenshot shows the Android home screen with various app icons visible, including the Play Store app icon in the top row of apps. According to the task objective, I need to open the Google Play Store as the first step to search for Google Keep. Tapping on the Play Store icon will launch the application, which is necessary before I can proceed with searching for and installing Google Keep. [screen changed]",
+      "tap(151,664)(151,664) — The screenshot shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps. According to the task objective, I need to open Google Play Store first to search for Google Keep, install it, and then create a note. Tapping on the Play Store icon will launch the application, which is the necessary first step before I can proceed with searching for and installing Google Keep. [screen unchanged after retries]",
+      "tap(151,664)(151,664) — The screen shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps, which is the first step needed to accomplish the task of searching for Google Keep. Tapping on the Play Store icon will launch the application, allowing me to proceed with searching for and installing Google Keep as required by the task objective. [screen unchanged after retries]",
+      "tap(151,664) — The screen shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps, which is the first step needed to accomplish the task of searching for Google Keep. Tapping on the Play Store icon will launch the application, allowing me to proceed with searching for and installing Google Keep as required by the task objective. [screen changed]",
+      "tap(151,664)(151,664) — The screenshot shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps, which is the first step needed to accomplish the task of searching for Google Keep. Tapping on the Play Store icon will launch the application, allowing me to proceed with searching for and installing Google Keep as required by the task objective. [screen unchanged after retries]"
+    ],
+    "appsInteracted": [
+      "Play Store"
+    ],
+    "observedResults": "Action tap(151,664)(151,664) did not produce a visible screen change after 4 attempts.",
+    "outcomeAchieved": false,
+    "failures": "Screenshot failed: HTTP 530",
+    "checkpoints": [
+      {
+        "step": 1,
+        "at": "2026-11-17T12:02:11.576Z",
+        "resuming": false,
+        "postScreenshotBytes": 1835292,
+        "postDeviceState": {
+          "source": "gateway",
+          "note": "mobilerun state unavailable"
+        },
+        "screenUnchangedRetries": 4,
+        "action": "tap",
+        "thought": "The task is to open Google Play Store, then search for Google Keep, install it, open it, and create a note. I can see the Play Store app icon on the home screen. The first step is to tap on the Play Store icon to launch it.",
+        "provider": "nvidia",
+        "screenChanged": false,
+        "lastActionError": "Screen unchanged after tap; retry 4/3",
+        "loopDetected": false
+      },
+      {
+        "step": 2,
+        "at": "2026-11-17T12:02:28.959Z",
+        "resuming": false,
+        "postScreenshotBytes": 1835076,
+        "postDeviceState": {
+          "source": "gateway",
+          "note": "mobilerun state unavailable"
+        },
+        "action": "tap",
+        "thought": "The screenshot shows the Android home screen with various app icons visible, including the Play Store app icon in the top row of apps. According to the task objective, I need to open the Google Play Store as the first step to search for Google Keep. Tapping on the Play Store icon will launch the application, which is necessary before I can proceed with searching for and installing Google Keep.",
+        "provider": "nvidia",
+        "screenChanged": true,
+        "lastActionError": null,
+        "loopDetected": false
+      },
+      {
+        "step": 3,
+        "at": "2026-11-17T12:02:33.487Z",
+        "resuming": false,
+        "error": "Gateway action tap(151,664) failed (400): {\"ok\":false,\"error\":\"Unknown action: tap(151,664)\"}",
+        "action": "tap(151,664)",
+        "thought": "The screenshot shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps. According to the task objective, I need to open Google Play Store first to search for Google Keep, install it, and then create a note. Tapping on the Play Store icon will launch the application, which is the necessary first step before I can proceed with searching for and installing Google Keep.",
+        "provider": "nvidia",
+        "screenChanged": false,
+        "lastActionError": "Gateway action tap(151,664) failed (400): {\"ok\":false,\"error\":\"Unknown action: tap(151,664)\"}",
+        "loopDetected": false
+      },
+      {
+        "step": 4,
+        "at": "2026-11-17T12:02:46.258Z",
+        "resuming": false,
+        "error": "Gateway action tap(151,664) failed (400): {\"ok\":false,\"error\":\"Unknown action: tap(151,664)\"}",
+        "action": "tap(151,664)",
+        "thought": "The screen shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps, which is the first step needed to accomplish the task of searching for Google Keep. Tapping on the Play Store icon will launch the application, allowing me to proceed with searching for and installing Google Keep as required by the task objective.",
+        "provider": "nvidia",
+        "screenChanged": false,
+        "lastActionError": "Gateway action tap(151,664) failed (400): {\"ok\":false,\"error\":\"Unknown action: tap(151,664)\"}",
+        "loopDetected": false
+      },
+      {
+        "step": 5,
+        "at": "2026-11-17T12:02:59.548Z",
+        "resuming": false,
+        "postScreenshotBytes": 1835628,
+        "postDeviceState": {
+          "source": "gateway",
+          "note": "mobilerun state unavailable"
+        },
+        "action": "tap",
+        "thought": "The screen shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps, which is the first step needed to accomplish the task of searching for Google Keep. Tapping on the Play Store icon will launch the application, allowing me to proceed with searching for and installing Google Keep as required by the task objective.",
+        "provider": "nvidia",
+        "screenChanged": true,
+        "lastActionError": null,
+        "loopDetected": false
+      },
+      {
+        "step": 6,
+        "at": "2026-11-17T12:03:04.244Z",
+        "resuming": false,
+        "error": "Gateway action tap(151,664) failed (530): <!doctype html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if gt IE 8]><!-->\n<html class=\"no-js\" lang=\"en-US\">\n    <!--<![endif]-->\n    <head>\n        <title>Cloudflare Tunnel error | sharp-municipality-mercury-proposition.trycloudflare.com | Cloudflare</title>\n        <meta charset=\"UTF-8\" />\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n<meta http-equiv=\"X-UA-Compatible\" content=\"IE=Edge\" />\n<meta name=\"robots\" content=\"noindex, nofollow\" />\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n<link rel=\"stylesheet\" id=\"cf_styles-css\" href=\"/cdn-cgi/styles/main.css\" /> <script>\n  (function(){if(document.addEventListener&&window.XMLHttpRequest&&JSON&&JSON.stringify){var e=function(a){var c=document.getElementById(\"error-feedback-survey\"),d=document.getElementById(\"error-feedback-success\"),b=new XMLHttpRequest;a={event:\"feedback clicked\",properties:{errorCode: 1033 },helpful:a,version: 1 };b.open(\"POST\",\"https://sparrow.cloudflare.com/api/v1/event\");b.setRequestHeader(\"Content-Type\",\"application/json\");b.setRequestHeader(\"Sparrow-Source-Key\",\"c771f0e4b54944bebf4261d44bd79a1e\");\nb.send(JSON.stringify(a));c.classList.add(\"feedback-hidden\");d.classList.remove(\"feedback-hidden\")};document.addEventListener(\"DOMContentLoaded\",function(){var a=document.getElementById(\"error-feedback\"),c=document.getElementById(\"feedback-button-yes\"),d=document.getElementById(\"feedback-button-no\");\"classList\"in a&&(a.classList.remove(\"feedback-hidden\"),c.addEventListener(\"click\",function(){e(!0)}),d.addEventListener(\"click\",function(){e(!1)}))})}})();\n</script>\n        <script\n            defer\n            src=\"https://performance.radar.cloudflare.com/beacon.js\"\n        ></script>\n    </head>\n    <body>\n        <div id=\"cf-wrapper\">\n            <div\n                class=\"cf-alert cf-alert-error cf-cookie-error hidden\"\n                id=\"cookie-alert\"\n                data-translate=\"enable_cookies\"\n            >\n                Please enable cookies.\n            </div>\n            <div id=\"cf-error-details\" class=\"p-0\">\n                <header\n                    class=\"mx-auto pt-10 lg:pt-6 lg:px-8 w-240 lg:w-full mb-15 antialiased\"\n                >\n                    <h1\n                        class=\"inline-block md:block mr-2 md:mb-2 font-light text-60 md:text-3xl text-black-dark leading-tight\"\n                    >\n                        <span data-translate=\"error\">Error</span>\n                        <span>1033</span>\n                    </h1>\n                    <span\n                        class=\"inline-block md:block heading-ray-id font-mono text-15 lg:text-sm lg:leading-relaxed\"\n                        >Ray ID: a5be97472926c8b7 &bull;</span\n                    >\n                    <span\n                        class=\"inline-block md:block heading-ray-id font-mono text-15 lg:text-sm lg:leading-relaxed\"\n                        >2026-11-17 12:03:13 UTC</span\n                    >\n                    <h2\n                        class=\"text-gray-600 leading-1.3 text-3xl lg:text-2xl font-light\"\n                    >\n                        Cloudflare Tunnel error\n                    </h2>\n                </header>\n                \n                \n                <section class=\"w-240 lg:w-full mx-auto mb-8 lg:px-8\">\n                    <div id=\"what-happened-section\" class=\"w-1/2 md:w-full\">\n                        <h2\n                            class=\"text-3xl leading-tight font-normal mb-4 text-black-dark antialiased\"\n                            data-translate=\"what_happened\"\n                        >\n                            What happened?\n                        </h2>\n                        \n                            <p>You've requested a page on a website (sharp-municipality-mercury-proposition.trycloudflare.com) that is on the <a href=\"https://www.cloudflare.com/5xx-error-landing/\" target=\"_blank\">Cloudflare</a> network. The host (sharp-municipality-mercury-proposition.trycloudflare.com) is configured as a Cloudflare Tunnel, and Cloudflare is currently unable to resolve it.\n                        \n                        \n                    </div>\n\n                    \n                    <div\n                        id=\"resolution-copy-section\"\n                        class=\"w-1/2 mt-6 text-15 leading-normal\"\n                    >\n                        <h2\n                            class=\"text-3xl leading-tight font-normal mb-4 text-black-dark antialiased\"\n                            data-translate=\"what_can_i_do\"\n                        >\n                            What can I do?\n                        </h2>\n                        <p><strong>If you are a visitor of this website:</strong><br />Please try again in a few minutes.</p><p><strong>If you are the owner of this website:</strong><br />Ensure that cloudflared is running and can reach the network. You may wish to enable <a rel=\"noopener noreferrer\" href=\"https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/routing-to-tunnel/lb/\">load balancing</a> for your tunnel.</p>\n                    </div>\n                    \n                </section>\n                \n\n                <div class=\"feedback-hidden py-8 text-center\" id=\"error-feedback\">\n    <div id=\"error-feedback-survey\" class=\"footer-line-wrapper\">\n        Was this page helpful?\n        <button\n            class=\"border border-solid bg-white cf-button cursor-pointer ml-4 px-4 py-2 rounded\"\n            id=\"feedback-button-yes\"\n            type=\"button\"\n        >\n            Yes\n        </button>\n        <button\n            class=\"border border-solid bg-white cf-button cursor-pointer ml-4 px-4 py-2 rounded\"\n            id=\"feedback-button-no\"\n            type=\"button\"\n        >\n            No\n        </button>\n    </div>\n    <div class=\"feedback-success feedback-hidden\" id=\"error-feedback-success\">\n        Thank you for your feedback!\n    </div>\n</div> <div class=\"cf-error-footer cf-wrapper w-240 lg:w-full py-10 sm:py-4 sm:px-8 mx-auto text-center sm:text-left border-solid border-0 border-t border-gray-300\">\n    <p class=\"text-13\">\n      <span class=\"cf-footer-item sm:block sm:mb-1\">Cloudflare Ray ID: <strong class=\"font-semibold\">a5be97472926c8b7</strong></span>\n      <span class=\"cf-footer-separator sm:hidden\">&bull;</span>\n      <span id=\"cf-footer-item-ip\" class=\"cf-footer-item hidden sm:block sm:mb-1\">\n        Your IP:\n        <button type=\"button\" id=\"cf-footer-ip-reveal\" class=\"cf-footer-ip-reveal-btn\">Click to reveal</button>\n        <span class=\"hidden\" id=\"cf-footer-ip\">35.247.23.66</span>\n        <span class=\"cf-footer-separator sm:hidden\">&bull;</span>\n      </span>\n      <span class=\"cf-footer-item sm:block sm:mb-1\"><span>Performance &amp; security by</span> <a rel=\"noopener noreferrer\" href=\"https://www.cloudflare.com/5xx-error-landing\" id=\"brand_link\" target=\"_blank\">Cloudflare</a></span>\n      \n    </p>\n    <script>(function(){function d(){var b=a.getElementById(\"cf-footer-item-ip\"),c=a.getElementById(\"cf-footer-ip-reveal\");b&&\"classList\"in b&&(b.classList.remove(\"hidden\"),c.addEventListener(\"click\",function(){c.classList.add(\"hidden\");a.getElementById(\"cf-footer-ip\").classList.remove(\"hidden\")}))}var a=document;document.addEventListener&&a.addEventListener(\"DOMContentLoaded\",d)})();</script>\n  </div><!-- /.error-footer -->\n            </div>\n            <!-- /#cf-error-details -->\n        </div>\n        <!-- /#cf-wrapper -->\n\n         <script>\n    window._cf_translation = {};\n    \n    \n  </script> \n        \n    </body>\n</html>",
+        "action": "tap(151,664)",
+        "thought": "The screenshot shows the Android home screen with various app icons including Play Store, Gmail, Photos, YouTube, Phone, Messages, and Chrome. The Play Store icon is visible in the top row of apps, which is the first step needed to accomplish the task of searching for Google Keep. Tapping on the Play Store icon will launch the application, allowing me to proceed with searching for and installing Google Keep as required by the task objective.",
+        "provider": "nvidia",
+        "screenChanged": false,
+        "lastActionError": "Gateway action tap(151,664) failed (530): <!doctype html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if gt IE 8]><!-->\n<html class=\"no-js\" lang=\"en-US\">\n    <!--<![endif]-->\n    <head>\n        <title>Cloudflare Tunnel error | sharp-municipality-mercury-proposition.trycloudflare.com | Cloudflare</title>\n        <meta charset=\"UTF-8\" />\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n<meta http-equiv=\"X-UA-Compatible\" content=\"IE=Edge\" />\n<meta name=\"robots\" content=\"noindex, nofollow\" />\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n<link rel=\"stylesheet\" id=\"cf_styles-css\" href=\"/cdn-cgi/styles/main.css\" /> <script>\n  (function(){if(document.addEventListener&&window.XMLHttpRequest&&JSON&&JSON.stringify){var e=function(a){var c=document.getElementById(\"error-feedback-survey\"),d=document.getElementById(\"error-feedback-success\"),b=new XMLHttpRequest;a={event:\"feedback clicked\",properties:{errorCode: 1033 },helpful:a,version: 1 };b.open(\"POST\",\"https://sparrow.cloudflare.com/api/v1/event\");b.setRequestHeader(\"Content-Type\",\"application/json\");b.setRequestHeader(\"Sparrow-Source-Key\",\"c771f0e4b54944bebf4261d44bd79a1e\");\nb.send(JSON.stringify(a));c.classList.add(\"feedback-hidden\");d.classList.remove(\"feedback-hidden\")};document.addEventListener(\"DOMContentLoaded\",function(){var a=document.getElementById(\"error-feedback\"),c=document.getElementById(\"feedback-button-yes\"),d=document.getElementById(\"feedback-button-no\");\"classList\"in a&&(a.classList.remove(\"feedback-hidden\"),c.addEventListener(\"click\",function(){e(!0)}),d.addEventListener(\"click\",function(){e(!1)}))})}})();\n</script>\n        <script\n            defer\n            src=\"https://performance.radar.cloudflare.com/beacon.js\"\n        ></script>\n    </head>\n    <body>\n        <div id=\"cf-wrapper\">\n            <div\n                class=\"cf-alert cf-alert-error cf-cookie-error hidden\"\n                id=\"cookie-alert\"\n                data-translate=\"enable_cookies\"\n            >\n                Please enable cookies.\n            </div>\n            <div id=\"cf-error-details\" class=\"p-0\">\n                <header\n                    class=\"mx-auto pt-10 lg:pt-6 lg:px-8 w-240 lg:w-full mb-15 antialiased\"\n                >\n                    <h1\n                        class=\"inline-block md:block mr-2 md:mb-2 font-light text-60 md:text-3xl text-black-dark leading-tight\"\n                    >\n                        <span data-translate=\"error\">Error</span>\n                        <span>1033</span>\n                    </h1>\n                    <span\n                        class=\"inline-block md:block heading-ray-id font-mono text-15 lg:text-sm lg:leading-relaxed\"\n                        >Ray ID: a5be97472926c8b7 &bull;</span\n                    >\n                    <span\n                        class=\"inline-block md:block heading-ray-id font-mono text-15 lg:text-sm lg:leading-relaxed\"\n                        >2026-11-17 12:03:13 UTC</span\n                    >\n                    <h2\n                        class=\"text-gray-600 leading-1.3 text-3xl lg:text-2xl font-light\"\n                    >\n                        Cloudflare Tunnel error\n                    </h2>\n                </header>\n                \n                \n                <section class=\"w-240 lg:w-full mx-auto mb-8 lg:px-8\">\n                    <div id=\"what-happened-section\" class=\"w-1/2 md:w-full\">\n                        <h2\n                            class=\"text-3xl leading-tight font-normal mb-4 text-black-dark antialiased\"\n                            data-translate=\"what_happened\"\n                        >\n                            What happened?\n                        </h2>\n                        \n                            <p>You've requested a page on a website (sharp-municipality-mercury-proposition.trycloudflare.com) that is on the <a href=\"https://www.cloudflare.com/5xx-error-landing/\" target=\"_blank\">Cloudflare</a> network. The host (sharp-municipality-mercury-proposition.trycloudflare.com) is configured as a Cloudflare Tunnel, and Cloudflare is currently unable to resolve it.\n                        \n                        \n                    </div>\n\n                    \n                    <div\n                        id=\"resolution-copy-section\"\n                        class=\"w-1/2 mt-6 text-15 leading-normal\"\n                    >\n                        <h2\n                            class=\"text-3xl leading-tight font-normal mb-4 text-black-dark antialiased\"\n                            data-translate=\"what_can_i_do\"\n                        >\n                            What can I do?\n                        </h2>\n                        <p><strong>If you are a visitor of this website:</strong><br />Please try again in a few minutes.</p><p><strong>If you are the owner of this website:</strong><br />Ensure that cloudflared is running and can reach the network. You may wish to enable <a rel=\"noopener noreferrer\" href=\"https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/routing-to-tunnel/lb/\">load balancing</a> for your tunnel.</p>\n                    </div>\n                    \n                </section>\n                \n\n                <div class=\"feedback-hidden py-8 text-center\" id=\"error-feedback\">\n    <div id=\"error-feedback-survey\" class=\"footer-line-wrapper\">\n        Was this page helpful?\n        <button\n            class=\"border border-solid bg-white cf-button cursor-pointer ml-4 px-4 py-2 rounded\"\n            id=\"feedback-button-yes\"\n            type=\"button\"\n        >\n            Yes\n        </button>\n        <button\n            class=\"border border-solid bg-white cf-button cursor-pointer ml-4 px-4 py-2 rounded\"\n            id=\"feedback-button-no\"\n            type=\"button\"\n        >\n            No\n        </button>\n    </div>\n    <div class=\"feedback-success feedback-hidden\" id=\"error-feedback-success\">\n        Thank you for your feedback!\n    </div>\n</div> <div class=\"cf-error-footer cf-wrapper w-240 lg:w-full py-10 sm:py-4 sm:px-8 mx-auto text-center sm:text-left border-solid border-0 border-t border-gray-300\">\n    <p class=\"text-13\">\n      <span class=\"cf-footer-item sm:block sm:mb-1\">Cloudflare Ray ID: <strong class=\"font-semibold\">a5be97472926c8b7</strong></span>\n      <span class=\"cf-footer-separator sm:hidden\">&bull;</span>\n      <span id=\"cf-footer-item-ip\" class=\"cf-footer-item hidden sm:block sm:mb-1\">\n        Your IP:\n        <button type=\"button\" id=\"cf-footer-ip-reveal\" class=\"cf-footer-ip-reveal-btn\">Click to reveal</button>\n        <span class=\"hidden\" id=\"cf-footer-ip\">35.247.23.66</span>\n        <span class=\"cf-footer-separator sm:hidden\">&bull;</span>\n      </span>\n      <span class=\"cf-footer-item sm:block sm:mb-1\"><span>Performance &amp; security by</span> <a rel=\"noopener noreferrer\" href=\"https://www.cloudflare.com/5xx-error-landing\" id=\"brand_link\" target=\"_blank\">Cloudflare</a></span>\n      \n    </p>\n    <script>(function(){function d(){var b=a.getElementById(\"cf-footer-item-ip\"),c=a.getElementById(\"cf-footer-ip-reveal\");b&&\"classList\"in b&&(b.classList.remove(\"hidden\"),c.addEventListener(\"click\",function(){c.classList.add(\"hidden\");a.getElementById(\"cf-footer-ip\").classList.remove(\"hidden\")}))}var a=document;document.addEventListener&&a.addEventListener(\"DOMContentLoaded\",d)})();</script>\n  </div><!-- /.error-footer -->\n            </div>\n            <!-- /#cf-error-details -->\n        </div>\n        <!-- /#cf-wrapper -->\n\n         <script>\n    window._cf_translation = {};\n    \n    \n  </script> \n        \n    </body>\n</html>",
+        "loopDetected": false
+      }
+    ],
+    "nextExecutionScheduled": null,
+    "resuming": false
+  },
+  {
     "id": "exec_1794907774938_89a4r",
     "automationId": "auto_playstore_1",
     "status": "failed",
