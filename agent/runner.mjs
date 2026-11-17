@@ -47,6 +47,8 @@ const EMULATOR_ACCESS_TOKEN = (process.env.EMULATOR_ACCESS_TOKEN || '').trim();
 const MOBILERUN_BRIDGE = (process.env.MOBILERUN_BRIDGE || 'http://127.0.0.1:8765').trim().replace(/\/+$/, '');
 const MAX_STEPS = Number(process.env.MAX_STEPS || '40'); // high cap; completion driven by outcome, not the cap
 const STEP_DELAY_MS = Number(process.env.STEP_DELAY_MS || '1500');
+const SCREEN_CHANGE_RETRIES = Number(process.env.SCREEN_CHANGE_RETRIES || '3');
+const SCREEN_CHANGE_BACKOFF_MS = Number(process.env.SCREEN_CHANGE_BACKOFF_MS || '2000');
 
 const PROVIDERS = [
   {
@@ -353,43 +355,62 @@ async function runAutomation(automation, emulator) {
           break;
         }
 
-        // --- execute the real action on the device ---
+        // --- execute the real action on the device, with screen-change verification + retry/backoff ---
         let actionResult;
-        try {
-          actionResult = await deviceAction(emulator.gatewayUrl, decision.action, {
-            x: decision.x, y: decision.y, x2: decision.x2, y2: decision.y2,
-            text: decision.text, keycode: decision.keycode, ms: decision.ms,
-            app: decision.app, clear: decision.clear,
-          });
-        } catch (err) {
-          // Record failure and allow the agent to recover on the next step
-          failures = (failures ? failures + '; ' : '') + `Step ${step + 1} (${decision.action}) failed: ${err.message}`;
-          checkpoint.error = err.message;
-          checkpoints.push(checkpoint);
-          actionsPerformed.push(`${decision.action} FAILED: ${err.message}`);
-          await sleep(STEP_DELAY_MS);
-          continue; // agent observes the new screen and decides recovery
+        let screenChanged = false;
+        let lastActionError = null;
+
+        for (let retry = 0; retry <= SCREEN_CHANGE_RETRIES; retry++) {
+          try {
+            actionResult = await deviceAction(emulator.gatewayUrl, decision.action, {
+              x: decision.x, y: decision.y, x2: decision.x2, y2: decision.y2,
+              text: decision.text, keycode: decision.keycode, ms: decision.ms,
+              app: decision.app, clear: decision.clear,
+            });
+            lastActionError = null;
+
+            // Wait for the device to settle
+            await sleep(STEP_DELAY_MS);
+
+            // Re-capture screen AFTER action to verify screen change
+            const postScreenshot = await captureScreen(emulator.gatewayUrl);
+            const postState = await inspectDeviceState(emulator.gatewayUrl);
+
+            checkpoint.postScreenshotBytes = postScreenshot.length;
+            checkpoint.postDeviceState = postState;
+
+            if (postScreenshot !== screenshotB64) {
+              screenChanged = true;
+              break; // screen changed — action had effect
+            }
+
+            // Screen unchanged: retry with backoff
+            lastActionError = `Screen unchanged after ${decision.action}; retry ${retry + 1}/${SCREEN_CHANGE_RETRIES}`;
+            checkpoint.screenUnchangedRetries = (retry + 1);
+            await sleep(SCREEN_CHANGE_BACKOFF_MS * (retry + 1));
+
+          } catch (err) {
+            lastActionError = err.message;
+            checkpoint.error = err.message;
+            await sleep(SCREEN_CHANGE_BACKOFF_MS * (retry + 1));
+          }
         }
 
         checkpoint.action = decision.action;
         checkpoint.thought = decision.thought;
         checkpoint.provider = decision._provider;
+        checkpoint.screenChanged = screenChanged;
+        checkpoint.lastActionError = lastActionError;
         checkpoints.push(checkpoint);
 
         const desc = `${decision.action}(${decision.text || `${decision.x},${decision.y}`})`;
-        actionsPerformed.push(`${desc} — ${decision.thought}`);
+        actionsPerformed.push(`${desc} — ${decision.thought}` + (screenChanged ? ' [screen changed]' : ' [screen unchanged after retries]'));
 
-        // Verify: wait briefly then re-capture screen to confirm the device changed
-        await sleep(STEP_DELAY_MS);
-        const postScreenshot = await captureScreen(emulator.gatewayUrl);
-        const postState = await inspectDeviceState(emulator.gatewayUrl);
-        checkpoint.postScreenshotBytes = postScreenshot.length;
-        checkpoint.postDeviceState = postState;
-        observedResults = `Action ${desc} executed. Post-action screen captured (${postScreenshot.length} bytes). Device state: ${JSON.stringify(postState || {}).slice(0, 300)}`;
-
-        // Simple progress signal: if screen changed meaningfully, note it
-        if (postScreenshot !== screenshotB64) {
-          observedResults += ' [screen changed — action had effect]';
+        if (!screenChanged) {
+          failures = (failures ? failures + '; ' : '') + `Step ${step + 1} (${decision.action}) did not change screen after ${SCREEN_CHANGE_RETRIES + 1} attempts: ${lastActionError || 'unknown'}`;
+          observedResults = `Action ${desc} did not produce a visible screen change after ${SCREEN_CHANGE_RETRIES + 1} attempts.`;
+        } else {
+          observedResults = `Action ${desc} executed. Post-action screen captured (${checkpoint.postScreenshotBytes} bytes). Device state: ${JSON.stringify(checkpoint.postDeviceState || {}).slice(0, 300)} [screen changed — action had effect]`;
         }
       }
 
