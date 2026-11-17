@@ -37,7 +37,7 @@ const PROVIDER_CATALOG = [
   {
     id: 'nvidia',
     label: 'NVIDIA NIM',
-    model: 'nemotron-3.5-super-vl-120b',
+    model: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
     endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
     envHint: 'NVIDIA_API_KEY',
   },
@@ -276,7 +276,7 @@ function extractTextFromProviderChunk(providerId, rawLine) {
   try { json = JSON.parse(payload); } catch { return null; }
   const choice = json.choices?.[0];
   if (!choice) return null;
-  const delta = (choice.delta && choice.delta.content) || '';
+  const delta = (choice.delta && (choice.delta.content || choice.delta.reasoning_content || '')) || '';
   const done = Boolean(choice.finish_reason);
   let usage = null;
   if (json.usage) usage = json.usage;
@@ -325,7 +325,7 @@ async function callProviderStream(providerId, key, messages, signal) {
     start,
     release: () => {
       const ms = Date.now() - start;
-      recordUsage(providerId, keyId, true, ms);
+      recordUsage(providerId, key.id, true, ms);
     },
   };
 }
