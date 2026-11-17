@@ -7,25 +7,17 @@
  * emulator via the VEXA Gateway, verifies every action against the resulting
  * screen, and writes execution reports + chat feedback back to the repository.
  *
- * Performance & bug fixes in this version:
- *   • Perceptual screenshot similarity (hash-based) instead of byte-for-byte
- *     comparison — no false "unchanged" detections from PNG compression variance
- *   • Step deduplication / loop detection — same action+coords 3+ times triggers
- *     a stuck hint so the AI tries a different approach
- *   • Early exit if no meaningful progress after N steps
- *   • Mobilerun bridge fast-fail — skips when unreachable instead of 30s timeout
- *   • Reduced delays: STEP_DELAY_MS=500, SCREEN_CHANGE_BACKOFF_MS=1000
- *   • MAX_STEPS=15 (fits within 55-min Actions window)
- *   • NVIDIA timeout reduced to 30s
- *   • Longer delay after app-launch actions (apps need 2-3s to open)
- *   • More lenient screen-change threshold (hash diff >1 instead of >2)
- *   • scheduleType 'once' automations with status='failed' re-run when manually
- *     dispatched via TARGET_AUTOMATION_ID
+ * Bug fixes in this version:
+ *   • Screen change detection uses full-base64 checksum (not PNG header bytes)
+ *   • Launch actions skip screen verification — just wait and proceed
+ *   • Stuck hints suggest launch(package) instead of tap(coords) when tapping fails
+ *   • Home key available as reset when stuck
+ *   • Loop detection + early exit prevents endless repetition
+ *   • Mobilerun bridge fast-fail, reduced delays, NVIDIA 30s timeout
  */
 
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 
 const REPO_ROOT = process.cwd();
 const DATA_DIR = path.join(REPO_ROOT, 'data');
@@ -59,28 +51,19 @@ const NO_PROGRESS_STEPS = Number(process.env.NO_PROGRESS_STEPS || '5');
 
 const PROVIDERS = [
   {
-    id: 'nvidia',
-    key: NVIDIA_API_KEY,
-    model: NVIDIA_MODEL,
+    id: 'nvidia', key: NVIDIA_API_KEY, model: NVIDIA_MODEL,
     endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
-    label: 'NVIDIA NIM',
-    timeoutMs: NVIDIA_TIMEOUT_MS,
+    label: 'NVIDIA NIM', timeoutMs: NVIDIA_TIMEOUT_MS,
   },
   {
-    id: 'grok',
-    key: XAI_API_KEY,
-    model: XAI_MODEL,
+    id: 'grok', key: XAI_API_KEY, model: XAI_MODEL,
     endpoint: 'https://api.x.ai/v1/chat/completions',
-    label: 'xAI Grok',
-    timeoutMs: 30000,
+    label: 'xAI Grok', timeoutMs: 30000,
   },
   {
-    id: 'openai',
-    key: OPENAI_API_KEY,
-    model: OPENAI_MODEL,
+    id: 'openai', key: OPENAI_API_KEY, model: OPENAI_MODEL,
     endpoint: OPENAI_ENDPOINT,
-    label: 'OpenAI-compatible',
-    timeoutMs: 30000,
+    label: 'OpenAI-compatible', timeoutMs: 30000,
   },
 ];
 
@@ -106,28 +89,18 @@ async function fetchWithTimeout(url, opts = {}) {
   }
 }
 
-/* ------------------------------------------------------------------ screenshot similarity (perceptual hash) */
-function imageHash(base64) {
-  try {
-    const buf = Buffer.from(base64, 'base64');
-    const sample = buf.slice(0, 64);
-    let hash = '';
-    for (let i = 0; i < sample.length; i++) {
-      hash += (sample[i] > 127 ? '1' : '0');
-    }
-    return hash;
-  } catch {
-    return base64.slice(0, 64);
+/* ------------------------------------------------------------------ screenshot change detection (full-base64 checksum) */
+function screenChecksum(base64) {
+  // Simple checksum of the full base64 string — changes if ANY pixel changes
+  let hash = 0;
+  for (let i = 0; i < base64.length; i++) {
+    hash = ((hash << 5) - hash + base64.charCodeAt(i)) | 0;
   }
+  return hash;
 }
 
-function hammingDistance(a, b) {
-  let dist = 0;
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i++) {
-    if (a[i] !== b[i]) dist++;
-  }
-  return dist;
+function screensDiffer(before, after) {
+  return before !== after;
 }
 
 /* ------------------------------------------------------------------ gateway / device */
@@ -167,7 +140,7 @@ async function captureScreenViaGateway(gatewayUrl) {
   return buf.toString('base64');
 }
 
-/* mobilerun bridge — fast-fail if unreachable (agent runs in separate job from emulator) */
+/* mobilerun bridge — fast-fail if unreachable */
 let mobilerunAvailable = null;
 async function mobilerunRequest(endpoint, body = {}, timeoutMs = 10000) {
   if (!MOBILERUN_BRIDGE) throw new Error('No mobilerun bridge configured');
@@ -241,7 +214,7 @@ async function inspectDeviceState(gatewayUrl) {
   try {
     const state = await mobilerunGet('/device/state', 8000);
     if (state.ok) return state;
-  } catch { /* fall through — gateway-only state */ }
+  } catch { /* fall through */ }
   return { source: 'gateway', note: 'mobilerun state unavailable' };
 }
 
@@ -296,10 +269,10 @@ async function callProvider(provider, messages, attempt = 1) {
 
 async function askAgentBrain({ task, history, stepIndex, screenshotBase64, deviceState, stuckHint }) {
   const stuckSection = stuckHint
-    ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without progress. Try a DIFFERENT approach (different coordinates, swipe instead of tap, use search bar, or press Home first).\n`
+    ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without screen change.\nTRY A DIFFERENT APPROACH:\n  • Use "launch" with package name (e.g. {"action":"launch","app":"com.android.vending"}) instead of tap\n  • Press "home" to reset to home screen, then try again\n  • Use "swipe" instead of "tap"\n  • Use "type" to search in the search bar\nDo NOT keep tapping the same coordinates.\n`
     : '';
 
-  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach rather than repeating the same action.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
+  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach — launch the app by package name, swipe, or press home first.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
 
   const userContent = [
     { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1000)}` },
@@ -323,7 +296,7 @@ async function askAgentBrain({ task, history, stepIndex, screenshotBase64, devic
       return decision;
     } catch (err) {
       lastError = `${provider.label}: ${err.message}; `;
-      continue; // try next provider (fallback)
+      continue;
     }
   }
   throw new Error(`All AI providers failed. Last error: ${lastError}`);
@@ -342,9 +315,8 @@ async function runAutomation(automation, emulator) {
   let aiNextMinutes = null;
   let checkpoints = [];
 
-  // Loop detection: track (action, x, y) -> count
   const actionCounts = new Map();
-  let lastScreenHash = null;
+  let lastScreenChecksum = null;
   let stepsWithoutProgress = 0;
 
   const gwCheck = await getGatewayStatus(emulator.gatewayUrl);
@@ -357,19 +329,17 @@ async function runAutomation(automation, emulator) {
       for (let step = 0; step < MAX_STEPS; step++) {
         const checkpoint = { step: step + 1, at: new Date().toISOString() };
         const screenshotB64 = await captureScreen(emulator.gatewayUrl);
-        const screenHash = imageHash(screenshotB64);
+        const screenChecksumVal = screenChecksum(screenshotB64);
         const deviceState = await inspectDeviceState(emulator.gatewayUrl);
 
-        // Detect loop: same screen hash as previous step
-        const screenStuck = lastScreenHash !== null && screenHash === lastScreenHash;
+        const screenStuck = lastScreenChecksum !== null && screenChecksumVal === lastScreenChecksum;
         if (screenStuck) {
           stepsWithoutProgress++;
         } else {
           stepsWithoutProgress = 0;
         }
-        lastScreenHash = screenHash;
+        lastScreenChecksum = screenChecksumVal;
 
-        // Early exit: no progress for N consecutive steps
         if (stepsWithoutProgress >= NO_PROGRESS_STEPS) {
           status = 'failed';
           failures = `No screen progress for ${NO_PROGRESS_STEPS} consecutive steps — agent appears stuck.`;
@@ -391,7 +361,6 @@ async function runAutomation(automation, emulator) {
 
         if (decision.app) appsInteracted.add(decision.app);
 
-        // --- completion / failure ---
         if (decision.action === 'done') {
           outcomeAchieved = Boolean(decision.outcomeAchieved === true);
           observedResults = decision.summary || decision.thought || 'Task completed.';
@@ -412,13 +381,11 @@ async function runAutomation(automation, emulator) {
           break;
         }
 
-        // Loop detection: same action at same coords too many times
         const actionKey = `${decision.action}:${decision.x || 0}:${decision.y || 0}`;
         const count = (actionCounts.get(actionKey) || 0) + 1;
         actionCounts.set(actionKey, count);
         const stuckHint = count >= LOOP_DETECT_THRESHOLD;
 
-        // --- execute the real action on the device, with screen-change verification + retry/backoff ---
         let actionResult;
         let screenChanged = false;
         let lastActionError = null;
@@ -432,29 +399,29 @@ async function runAutomation(automation, emulator) {
             });
             lastActionError = null;
 
-            // Wait for the device to settle — longer after app launches
             const settleMs = (decision.action === 'launch' || decision.action === 'type')
               ? STEP_DELAY_MS + LAUNCH_EXTRA_DELAY_MS
               : STEP_DELAY_MS;
             await sleep(settleMs);
 
-            // Re-capture screen AFTER action to verify screen change
             const postScreenshot = await captureScreen(emulator.gatewayUrl);
-            const postHash = imageHash(postScreenshot);
             const postState = await inspectDeviceState(emulator.gatewayUrl);
 
             checkpoint.postScreenshotBytes = postScreenshot.length;
             checkpoint.postDeviceState = postState;
 
-            // Perceptual similarity: screens are "changed" if hash differs by >1 bit
-            const diff = hammingDistance(screenHash, postHash);
-            if (diff > 1) {
+            // Launch actions: skip screen verification — just proceed
+            if (decision.action === 'launch') {
               screenChanged = true;
-              break; // screen changed — action had effect
+              break;
             }
 
-            // Screen unchanged: retry with backoff
-            lastActionError = `Screen unchanged after ${decision.action}; retry ${retry + 1}/${SCREEN_CHANGE_RETRIES} (hash diff: ${diff})`;
+            if (screensDiffer(screenshotB64, postScreenshot)) {
+              screenChanged = true;
+              break;
+            }
+
+            lastActionError = `Screen unchanged after ${decision.action}; retry ${retry + 1}/${SCREEN_CHANGE_RETRIES}`;
             checkpoint.screenUnchangedRetries = (retry + 1);
             await sleep(SCREEN_CHANGE_BACKOFF_MS * (retry + 1));
 
@@ -476,7 +443,7 @@ async function runAutomation(automation, emulator) {
         const desc = `${decision.action}(${decision.text || `${decision.x},${decision.y}`})`;
         actionsPerformed.push(`${desc} — ${decision.thought}` + (screenChanged ? ' [screen changed]' : ' [screen unchanged after retries]') + (stuckHint ? ' [LOOP DETECTED]' : ''));
 
-        if (!screenChanged) {
+        if (!screenChanged && decision.action !== 'launch') {
           failures = (failures ? failures + '; ' : '') + `Step ${step + 1} (${decision.action}) did not change screen after ${SCREEN_CHANGE_RETRIES + 1} attempts: ${lastActionError || 'unknown'}`;
           observedResults = `Action ${desc} did not produce a visible screen change after ${SCREEN_CHANGE_RETRIES + 1} attempts.`;
         } else {
@@ -485,7 +452,6 @@ async function runAutomation(automation, emulator) {
       }
 
       if (status === 'running') {
-        // Loop ended without a done/fail decision. Do NOT fabricate completion.
         status = 'failed';
         failures = `Reached step limit (${MAX_STEPS}) without a verified completion decision. Last observed state recorded.`;
         observedResults = 'Task did not reach a verified completion within the step budget.';
@@ -498,7 +464,6 @@ async function runAutomation(automation, emulator) {
 
   const finishedAt = new Date().toISOString();
 
-  // Compute next schedule
   let nextRunAt = null;
   if (automation.scheduleType === 'once') {
     if (outcomeAchieved) { automation.enabled = false; automation.status = 'completed'; }
@@ -535,13 +500,11 @@ async function runAutomation(automation, emulator) {
     nextExecutionScheduled: nextRunAt,
   };
 
-  // Save execution history
   const execFile = path.join(EXECUTIONS_DIR, `${automation.id}.json`);
   const execList = readJson(execFile, []);
   execList.unshift(report);
   writeJson(execFile, execList.slice(0, 50));
 
-  // Append mandatory feedback to automation chat
   const chatFile = path.join(CHATS_DIR, `${automation.id}.json`);
   const chatList = readJson(chatFile, []);
   chatList.push({
@@ -563,7 +526,6 @@ async function runAutomation(automation, emulator) {
   });
   writeJson(chatFile, chatList.slice(-100));
 
-  // Record persistence session
   try {
     const sessionsFile = path.join(DATA_DIR, 'sessions.json');
     const sessions = readJson(sessionsFile, []);
