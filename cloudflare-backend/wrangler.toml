@@ -1,0 +1,37 @@
+name = "vexa-ai-agent"
+main = "src/index.js"
+compatibility_date = "2026-11-17"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "vexa-db"
+database_id = "43090570-0d1a-4ff5-976a-d23a653df304"
+
+# KV Namespaces
+[[kv_namespaces]]
+binding = "CONFIG_KV"
+id = "27b1bccb051446ccab9dff172c0a498a"
+
+[[kv_namespaces]]
+binding = "SESSION_KV"
+id = "26a6691c95854050b9cb40b11f8e54e4"
+
+# Durable Objects for live emulator sessions
+[[durable_objects.bindings]]
+name = "EmulatorSession"
+class_name = "EmulatorSession"
+
+# Variables
+[vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "info"
+
+# Durable Objects migration
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["EmulatorSession"]
+
+[observability]
+enabled = true
