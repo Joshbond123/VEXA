@@ -7,13 +7,13 @@
     "intervalMinutes": 60,
     "enabled": true,
     "paused": false,
-    "status": "queued",
-    "nextRunAt": "2026-11-17T07:30:00Z",
-    "lastRunAt": "2026-11-17T01:12:22.358Z",
-    "runCount": 2,
+    "status": "failed",
+    "nextRunAt": null,
+    "lastRunAt": "2026-11-17T07:29:46.166Z",
+    "runCount": 3,
     "createdAt": "2026-11-17T01:07:32.456038+00:00",
-    "updatedAt": "2026-11-17T01:12:22.358Z",
-    "lastRunStatus": null
+    "updatedAt": "2026-11-17T07:29:46.166Z",
+    "lastRunStatus": "failed"
   },
   {
     "id": "auto_test_1",
