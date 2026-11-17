@@ -121,34 +121,45 @@ Respond ONLY with valid JSON:
     });
   }
 
-  const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${NVIDIA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: NVIDIA_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
-      ],
-      temperature: 0.2,
-      max_tokens: 512,
-    }),
-    signal: AbortSignal.timeout(45000),
-  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${NVIDIA_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: NVIDIA_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
+          ],
+          temperature: 0.2,
+          max_tokens: 512,
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`NVIDIA API error ${res.status}: ${errText}`);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+          await sleep(3000 * attempt);
+          continue;
+        }
+        throw new Error(`NVIDIA API error ${res.status}: ${errText}`);
+      }
+
+      const json = await res.json();
+      const raw = (json.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error(`Agent returned non-JSON: ${raw.slice(0, 200)}`);
+      return JSON.parse(match[0]);
+    } catch (err) {
+      if (attempt === 3) throw err;
+      await sleep(3000 * attempt);
+    }
   }
-
-  const json = await res.json();
-  const raw = (json.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error(`Agent returned non-JSON: ${raw.slice(0, 200)}`);
-  return JSON.parse(match[0]);
 }
 
 async function runAutomation(automation, emulator) {
