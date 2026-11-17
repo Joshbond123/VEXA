@@ -1,5 +1,20 @@
 [
   {
+    "id": "auto_playstore_1",
+    "name": "Download & Use App from Play Store",
+    "instructions": "Open Google Play Store on the Android phone, search for 'Calculator' (or 'Google Keep'), install it, open the downloaded app, and perform a quick action inside it, then report what you observed.",
+    "scheduleType": "once",
+    "intervalMinutes": 60,
+    "enabled": true,
+    "paused": false,
+    "status": "queued",
+    "nextRunAt": "2026-11-17T01:07:32.456038+00:00",
+    "lastRunAt": null,
+    "runCount": 0,
+    "createdAt": "2026-11-17T01:07:32.456038+00:00",
+    "updatedAt": "2026-11-17T01:07:32.456038+00:00"
+  },
+  {
     "id": "auto_test_1",
     "name": "Inspect Android Settings",
     "instructions": "Open Settings on the Android phone, check the Android version and Wi-Fi status, and report what you observe.",
