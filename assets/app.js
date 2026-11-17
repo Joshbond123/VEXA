@@ -80,7 +80,12 @@
 
   async function ghWriteJson(path, data, message) {
     const pat = state.settings.githubPat;
-    if (!pat) { toast('GitHub PAT not configured in Settings. Changes cannot be persisted.', 'err'); return false; }
+    if (!pat) {
+      // Don't block — just warn and save locally only
+      toast('GitHub PAT not configured. Changes saved locally only. Add your PAT in Settings to persist.', 'warn');
+      // Still update local state so UI works
+      return true;
+    }
     const apiUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${path}`;
     const headers = { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' };
     let sha;
@@ -102,7 +107,10 @@
 
   async function dispatchWorkflow(workflowFile, inputs = {}) {
     const pat = state.settings.githubPat;
-    if (!pat) { toast('GitHub PAT not configured. Cannot dispatch workflows.', 'err'); return false; }
+    if (!pat) {
+      toast('GitHub PAT not configured. Go to Settings and add your PAT to enable agent tasks.', 'warn');
+      return false;
+    }
     const res = await fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${workflowFile}/dispatches`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${pat}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
@@ -150,7 +158,9 @@
     } catch (err) {
       setStatus(false, `Unreachable (${err.message})`);
       const reasonEl = $('phoneOfflineReason');
-      if (reasonEl) reasonEl.textContent = `Gateway ${gw} is offline or starting. Start the emulator via the GitHub Action or configure the Gateway URL in Settings.`;
+      if (reasonEl) reasonEl.textContent = `Android emulator gateway is offline (${gw}). Click "Start Emulator" to boot the device via GitHub Actions (~2 minutes), or configure a Gateway URL in Settings.`;
+      const startBtn = $('overlayStartBtn');
+      if (startBtn) startBtn.style.display = 'inline-block';
     }
   }
 
@@ -365,9 +375,12 @@
     const ok = await dispatchWorkflow('agent-runner.yml', { automation_id: state.activeAutoId });
     if (ok) {
       toast('Agent task dispatched to GitHub Actions. It will run with server-side AI keys and report back here.', 'ok');
-      state.pendingChat = { automationId: state.activeAutoId, message: text };
+      state.pendingChat = { automationId: state.activeAutoId, message: text, sentAt: now };
       // Start polling for the agent's response
       startChatPoll();
+    } else {
+      // PAT not configured — show a system message in the chat so the user knows why
+      appendMessage('system', '⚠️ GitHub PAT not configured. Go to Settings → AI Providers & Settings and add your GitHub PAT to enable the AI agent. Without a PAT, tasks cannot be dispatched to the agent.');
     }
   }
 
@@ -554,7 +567,22 @@
     // Start emulator (desktop + mobile)
     const startEmu = async () => {
       const ok = await dispatchWorkflow('android-emulator.yml');
-      if (ok) toast('Android Emulator workflow dispatched. The device will boot in ~2 minutes and the gateway URL will appear here.', 'ok');
+      if (ok) {
+        toast('Android Emulator workflow dispatched. Booting device (~2 minutes)...', 'ok');
+        // Poll for gateway to come online
+        let attempts = 0;
+        const pollInterval = setInterval(async () => {
+          attempts++;
+          await checkEmulatorHealth();
+          if (state.emulator.status === 'online') {
+            clearInterval(pollInterval);
+            toast('Android emulator is now online!', 'ok');
+          } else if (attempts >= 30) {
+            clearInterval(pollInterval);
+            toast('Emulator still booting. Check back in a minute.', 'warn');
+          }
+        }, 4000);
+      }
     };
     on($('startEmulatorBtn'), 'click', startEmu);
     on($('overlayStartBtn'), 'click', startEmu);

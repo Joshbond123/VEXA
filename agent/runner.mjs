@@ -41,13 +41,14 @@ const OPENAI_ENDPOINT = (process.env.OPENAI_ENDPOINT || 'https://api.openai.com/
 const TARGET_AUTOMATION_ID = (process.env.TARGET_AUTOMATION_ID || '').trim();
 const EMULATOR_ACCESS_TOKEN = (process.env.EMULATOR_ACCESS_TOKEN || '').trim();
 const MOBILERUN_BRIDGE = (process.env.MOBILERUN_BRIDGE || 'http://127.0.0.1:8765').trim().replace(/\/+$/, '');
-const MAX_STEPS = Number(process.env.MAX_STEPS || '15');
-const STEP_DELAY_MS = Number(process.env.STEP_DELAY_MS || '500');
-const SCREEN_CHANGE_RETRIES = Number(process.env.SCREEN_CHANGE_RETRIES || '2');
-const SCREEN_CHANGE_BACKOFF_MS = Number(process.env.SCREEN_CHANGE_BACKOFF_MS || '1000');
-const LAUNCH_EXTRA_DELAY_MS = Number(process.env.LAUNCH_EXTRA_DELAY_MS || '2500');
-const LOOP_DETECT_THRESHOLD = Number(process.env.LOOP_DETECT_THRESHOLD || '3');
-const NO_PROGRESS_STEPS = Number(process.env.NO_PROGRESS_STEPS || '5');
+const MAX_STEPS = Number(process.env.MAX_STEPS || '60');
+const STEP_DELAY_MS = Number(process.env.STEP_DELAY_MS || '400');
+const SCREEN_CHANGE_RETRIES = Number(process.env.SCREEN_CHANGE_RETRIES || '3');
+const SCREEN_CHANGE_BACKOFF_MS = Number(process.env.SCREEN_CHANGE_BACKOFF_MS || '800');
+const LAUNCH_EXTRA_DELAY_MS = Number(process.env.LAUNCH_EXTRA_DELAY_MS || '2000');
+const LOOP_DETECT_THRESHOLD = Number(process.env.LOOP_DETECT_THRESHOLD || '4');
+const NO_PROGRESS_STEPS = Number(process.env.NO_PROGRESS_STEPS || '8');
+const PERSIST_STATE_FILE = path.join(DATA_DIR, 'agent-state.json');
 
 const PROVIDERS = [
   {
@@ -73,6 +74,22 @@ function readJson(file, fallback) {
 }
 function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n', 'utf8');
+}
+
+/* ------------------------------------------------------------------ multi-run persistence */
+function saveAgentState(autoId, state) {
+  const all = readJson(PERSIST_STATE_FILE, {});
+  all[autoId] = state;
+  writeJson(PERSIST_STATE_FILE, all);
+}
+function loadAgentState(autoId) {
+  const all = readJson(PERSIST_STATE_FILE, {});
+  return all[autoId] || null;
+}
+function clearAgentState(autoId) {
+  const all = readJson(PERSIST_STATE_FILE, {});
+  delete all[autoId];
+  writeJson(PERSIST_STATE_FILE, all);
 }
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -339,9 +356,20 @@ async function runAutomation(automation, emulator) {
   let aiNextMinutes = null;
   let checkpoints = [];
 
+  // Multi-run persistence: load any previously saved state for this automation
+  const persistedState = loadAgentState(automation.id);
+  const isResuming = persistedState !== null;
+
   const actionCounts = new Map();
   let lastScreenChecksum = null;
   let stepsWithoutProgress = 0;
+
+  // Restore action counts from persisted state if resuming
+  if (persistedState?.actionCounts) {
+    for (const [k, v] of Object.entries(persistedState.actionCounts)) {
+      actionCounts.set(k, v);
+    }
+  }
 
   const gwCheck = await getGatewayStatus(emulator.gatewayUrl);
   if (!gwCheck.online) {
@@ -350,27 +378,35 @@ async function runAutomation(automation, emulator) {
     observedResults = 'Could not connect to running Android emulator.';
   } else {
     try {
-      // Press HOME first to ensure we're on the home screen (resets any dialogs/locks)
-      try {
-        await deviceAction(emulator.gatewayUrl, 'home', {});
-        await sleep(800);
-      } catch (e) {
-        // Non-fatal — continue even if home key fails
-      }
-
-      // Dismiss Play Store "Complete account setup" gate if visible (tap Skip)
-      try {
-        const gateResult = await dismissPlayStoreBlockers(emulator.gatewayUrl);
-        if (gateResult.dismissed) {
-          actionsPerformed.push(`GATE DISMISSED: Play Store account-setup gate skipped at (${gateResult.coords.x},${gateResult.coords.y})`);
-          observedResults = `Play Store account gate dismissed — skipped 'Add a payment option' dialog.`;
+      // If resuming, skip HOME press to preserve current screen state
+      if (!isResuming) {
+        // Press HOME first to ensure we're on the home screen (resets any dialogs/locks)
+        try {
+          await deviceAction(emulator.gatewayUrl, 'home', {});
+          await sleep(800);
+        } catch (e) {
+          // Non-fatal — continue even if home key fails
         }
-      } catch (e) {
-        // Non-fatal — continue even if gate dismissal fails
+
+        // Dismiss Play Store "Complete account setup" gate if visible (tap Skip)
+        try {
+          const gateResult = await dismissPlayStoreBlockers(emulator.gatewayUrl);
+          if (gateResult.dismissed) {
+            actionsPerformed.push(`GATE DISMISSED: Play Store account-setup gate skipped at (${gateResult.coords.x},${gateResult.coords.y})`);
+            observedResults = `Play Store account gate dismissed — skipped 'Add a payment option' dialog.`;
+          }
+        } catch (e) {
+          // Non-fatal — continue even if gate dismissal fails
+        }
+      } else {
+        observedResults = `Resuming task from step ${persistedState.step + 1} (saved state restored).`;
       }
 
-      for (let step = 0; step < MAX_STEPS; step++) {
-        const checkpoint = { step: step + 1, at: new Date().toISOString() };
+      // Determine starting step (resume from persisted state)
+      const startStep = isResuming ? persistedState.step : 0;
+
+      for (let step = startStep; step < MAX_STEPS; step++) {
+        const checkpoint = { step: step + 1, at: new Date().toISOString(), resuming: isResuming && step === startStep };
         const screenshotB64 = await captureScreen(emulator.gatewayUrl);
         const screenChecksumVal = screenChecksum(screenshotB64);
         const deviceState = await inspectDeviceState(emulator.gatewayUrl);
@@ -523,12 +559,19 @@ async function runAutomation(automation, emulator) {
         } else {
           observedResults = `Action ${desc} executed. Post-action screen captured (${checkpoint.postScreenshotBytes} bytes). Device state: ${JSON.stringify(checkpoint.postDeviceState || {}).slice(0, 300)} [screen changed — action had effect]`;
         }
-      }
 
-      if (status === 'running') {
-        status = 'failed';
-        failures = `Reached step limit (${MAX_STEPS}) without a verified completion decision. Last observed state recorded.`;
-        observedResults = 'Task did not reach a verified completion within the step budget.';
+        // --- PERSIST STATE AFTER EACH STEP (multi-run support) ---
+        saveAgentState(automation.id, {
+          step: step + 1,
+          actionsPerformed,
+          appsInteracted: Array.from(appsInteracted),
+          observedResults,
+          failures,
+          actionCounts: Object.fromEntries(actionCounts),
+          startedAt,
+          automationId: automation.id,
+          task: automation.instructions,
+        });
       }
     } catch (err) {
       status = 'failed';
@@ -538,16 +581,22 @@ async function runAutomation(automation, emulator) {
 
   const finishedAt = new Date().toISOString();
 
+  // Clear persisted state if task is complete or failed (not continuing)
+  if (status !== 'continuing') {
+    clearAgentState(automation.id);
+  }
+
   let nextRunAt = null;
   if (automation.scheduleType === 'once') {
     if (outcomeAchieved) { automation.enabled = false; automation.status = 'completed'; }
+    else if (status === 'continuing') { automation.status = 'continuing'; automation.enabled = true; automation.paused = false; }
     else { automation.status = status; }
   } else if (automation.enabled && !automation.paused) {
     const mins = automation.scheduleType === 'ai_decided' && aiNextMinutes
       ? Math.max(15, Number(aiNextMinutes))
       : Number(automation.intervalMinutes || 60);
     nextRunAt = new Date(Date.now() + mins * 60000).toISOString();
-    automation.status = 'waiting';
+    automation.status = status === 'continuing' ? 'continuing' : 'waiting';
   } else {
     automation.status = automation.paused ? 'stopped' : status;
   }
@@ -572,6 +621,7 @@ async function runAutomation(automation, emulator) {
     failures,
     checkpoints,
     nextExecutionScheduled: nextRunAt,
+    resuming: isResuming,
   };
 
   const execFile = path.join(EXECUTIONS_DIR, `${automation.id}.json`);
@@ -595,10 +645,13 @@ async function runAutomation(automation, emulator) {
       `• **Observed:** ${observedResults || 'N/A'}`,
       failures ? `• **Failures:** ${failures}` : null,
       `• **Outcome Achieved:** ${outcomeAchieved}`,
+      `• **Status:** ${status}`,
       `• **Next Run:** ${nextRunAt || 'None (completed/stopped)'}`,
+      isResuming ? `• **Resumed from:** step ${persistedState.step}` : null,
     ].filter(Boolean).join('\n'),
   });
   writeJson(chatFile, chatList.slice(-100));
+
 
   try {
     const sessionsFile = path.join(DATA_DIR, 'sessions.json');
@@ -627,6 +680,7 @@ async function main() {
   const due = automations.filter((a) => {
     if (TARGET_AUTOMATION_ID) return a.id === TARGET_AUTOMATION_ID;
     if (!a.enabled || a.paused) return false;
+    if (a.status === 'continuing') return true; // resume continuing tasks immediately
     if (!a.nextRunAt) return a.status === 'queued';
     return new Date(a.nextRunAt).getTime() <= now;
   });

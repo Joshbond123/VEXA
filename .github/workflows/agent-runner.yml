@@ -22,17 +22,17 @@ jobs:
   run-agent:
     name: Execute Due Automations
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 360
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       EMULATOR_ACCESS_TOKEN: ${{ secrets.EMULATOR_ACCESS_TOKEN }}
       MOBILERUN_BRIDGE: http://127.0.0.1:8765
-      MAX_STEPS: '15'
-      STEP_DELAY_MS: '500'
-      SCREEN_CHANGE_RETRIES: '2'
-      SCREEN_CHANGE_BACKOFF_MS: '1000'
+      MAX_STEPS: '60'
+      STEP_DELAY_MS: '400'
+      SCREEN_CHANGE_RETRIES: '3'
+      SCREEN_CHANGE_BACKOFF_MS: '800'
       NVIDIA_TIMEOUT_MS: '60000'
-      LAUNCH_EXTRA_DELAY_MS: '2500'
+      LAUNCH_EXTRA_DELAY_MS: '2000'
       TARGET_AUTOMATION_ID: ${{ inputs.automation_id || '' }}
     steps:
       - name: Checkout VEXA

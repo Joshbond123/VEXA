@@ -2,13 +2,13 @@ name: VEXA Android Live Phone
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       rotation_minutes:
-        description: 'Minutes to keep this emulator active (default: 240)'
+        description: 'Minutes to keep this emulator active (default: 360)'
         required: false
-        default: '240'
+        default: '360'
         type: string
 
 permissions:
@@ -23,7 +23,7 @@ jobs:
   run-emulator:
     name: Boot Android Emulator & Expose Gateway
     runs-on: ubuntu-latest
-    timeout-minutes: 255
+    timeout-minutes: 390
     env:
       EMULATOR_ACCESS_TOKEN: ${{ secrets.EMULATOR_ACCESS_TOKEN }}
       EMULATOR_GATEWAY_SECRET: ${{ secrets.EMULATOR_GATEWAY_SECRET }}
