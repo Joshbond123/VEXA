@@ -9,11 +9,11 @@
     "paused": false,
     "status": "failed",
     "nextRunAt": null,
-    "lastRunAt": "2026-11-17T12:04:19.619Z",
-    "runCount": 1,
+    "lastRunAt": "2026-11-17T12:24:21.319Z",
+    "runCount": 2,
+    "lastRunStatus": "failed",
     "createdAt": "2026-11-17T01:07:32.456038+00:00",
-    "updatedAt": "2026-11-17T12:04:19.619Z",
-    "lastRunStatus": "failed"
+    "updatedAt": "2026-11-17T12:24:21.319Z"
   },
   {
     "id": "auto_test_1",
