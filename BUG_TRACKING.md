@@ -45,10 +45,10 @@ Architecture: GitHub Actions (backend) + GitHub Pages (frontend) — no Blitz cl
 - [x] Agent logic tested — Fixed and verified (test_bugfixes.mjs 14 assertions pass; runner.mjs syntax-checked)
 - [x] mobilerun installed + import verified — Fixed and verified (mobilerun 0.7.4, adbutils; bridge starts, returns proper no-device errors)
 - [ ] Production build + deployment status — Still unresolved (no Pages deploy credentials available; site ready to deploy)
-- [ ] Changes committed & pushed — Fixed but verification incomplete (committed locally on branch vexa; PUSH BLOCKED — no GitHub credentials available)
+- [x] Changes committed & pushed — Fixed and verified (committed and pushed to origin/vexa at commit a6e0bee; https://github.com/Joshbond123/VEXA/tree/vexa)
 
 ## Deployment blockers (documented, not fabricated)
-- No NVIDIA/XAI/OpenAI API keys available → end-to-end AI chat/Android task execution cannot be verified with real models
+- No XAI_API_KEY/OPENAI_API_KEY → Grok/OpenAI provider fallback cannot be live-tested (NVIDIA key verified working)
 - No Android device/emulator + adb/KVM in sandbox → genuine mobilerun Android operations cannot be demonstrated
-- No GitHub PAT → cannot push to origin or run GitHub Actions workflows
-- No GitHub Pages deploy credentials → cannot deploy frontend to production
+- No GitHub Pages deploy credentials → frontend not yet published to production URL
+- GitHub Secrets not yet configured → Actions workflows cannot run (need NVIDIA_API_KEY, XAI_API_KEY, OPENAI_API_KEY, EMULATOR_ACCESS_TOKEN, EMULATOR_GATEWAY_SECRET)

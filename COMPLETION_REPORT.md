@@ -2,9 +2,9 @@
 
 **Platform:** VEXA — Autonomous AI Android Agent
 **Branch:** `vexa`
-**Commit:** local (push blocked — see Blockers)
+**Commit:** `a6e0bee` (pushed to GitHub — https://github.com/Joshbond123/VEXA/tree/vexa)
 **Date:** 2026-11-17
-**Environment:** Linux sandbox, Node 20.20.2, Python 3.13.18 (no KVM/adb/Android device, no API credentials, no GitHub PAT)
+**Environment:** Linux sandbox, Node 20.20.2, Python 3.13.18 (no KVM/adb/Android device, GitHub PAT now configured)
 **Architecture:** GitHub Actions (backend) + GitHub Pages (frontend) — no Blitz cloud
 
 ---
@@ -125,7 +125,10 @@ A complete, professional single-page application replaced the previous basic int
 
 ### Tested
 - Provider rotation + fallback logic validated by unit tests in `test_bugfixes.mjs` (NVIDIA → Grok → OpenAI exhaustion with clear error).
-- Real model responses cannot be verified without NVIDIA/XAI/OpenAI API keys (blocker).
+- **NVIDIA API key verified working end-to-end**: `/api/chat/completions` with NVIDIA key returns streaming SSE deltas and a structured JSON action (`thought` + `action` + `text`). Model name corrected to `nvidia/nemotron-3.5-super-vl-120b-a12b` (NVIDIA NIM requires publisher-prefixed IDs).
+- Fixed `keyId is not defined` ReferenceError in `callProviderStream.release()` closure.
+- Fixed `extractTextFromProviderChunk` to also extract `reasoning_content` from NVIDIA nemotron model deltas.
+- Real Grok/OpenAI responses cannot be verified without XAI_API_KEY/OPENAI_API_KEY (blocker).
 
 ---
 
@@ -211,17 +214,27 @@ No tests were fabricated. Tests requiring real credentials/devices are documente
 
 **Backend (AI Agent):** `.github/workflows/agent-runner.yml` — runs `agent/runner.mjs` with GitHub Secret API keys (cron */15 + workflow_dispatch).
 
-### Deployment blockers
-- No GitHub PAT → cannot `git push` to `origin/vexa` or trigger Actions workflows.
-- No NVIDIA/XAI/OpenAI keys → AI chat/providers cannot be live-tested.
-- No Android device/emulator + adb/KVM → genuine mobilerun operations cannot be demonstrated.
-- No GitHub Pages deploy credentials → cannot publish the frontend to GitHub Pages.
+### Deployment status
+- **GitHub PAT configured** — code pushed to `https://github.com/Joshbond123/VEXA.git` branch `vexa` (commit `a6e0bee`).
+- **NVIDIA API key verified** — AI chat works end-to-end through `/api/chat/completions`.
 
-Push command (run with a PAT):
-```
-git remote set-url origin https://<PAT>@github.com/Joshbond123/VEXA.git
-git push origin vexa
-```
+### Remaining deployment steps (need GitHub Secrets configured)
+To enable GitHub Actions workflows (Android emulator boot, AI agent runner, Pages deploy), the following GitHub Secrets must be set in the repo settings:
+- `NVIDIA_API_KEY` = `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`
+- `XAI_API_KEY` = (xAI Grok key — not yet available)
+- `OPENAI_API_KEY` = (OpenAI-compatible key — not yet available)
+- `EMULATOR_ACCESS_TOKEN` = (for viewer/control WebSocket auth)
+- `EMULATOR_GATEWAY_SECRET` = (for gateway auth)
+
+Then trigger the workflows:
+1. **android-emulator.yml** — boots Pixel 7 Android 14 emulator, starts gateway, publishes URL to `data/emulator.json`
+2. **agent-runner.yml** — runs autonomous agent with server-side keys (cron */15 + workflow_dispatch)
+3. **pages.yml** — deploys frontend to GitHub Pages (`https://joshbond123.github.io/VEXA/`)
+
+### Remaining blockers
+- No Android device/emulator + adb/KVM → genuine mobilerun operations cannot be demonstrated (documented blocker)
+- No XAI_API_KEY/OPENAI_API_KEY → Grok/OpenAI provider fallback cannot be live-tested
+- No GitHub Pages deploy credentials → frontend not yet published to production URL
 
 ---
 
