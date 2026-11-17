@@ -1,11 +1,11 @@
 {
-  "gatewayUrl": "https://lobby-charity-intermediate-commitment.trycloudflare.com",
+  "gatewayUrl": "https://est-minnesota-cst-semi.trycloudflare.com",
   "status": "online",
-  "lastHeartbeat": "2026-11-16T23:56:51.888903+00:00",
+  "lastHeartbeat": "2026-11-17T06:33:42.531299+00:00",
   "deviceModel": "Pixel 7",
   "androidVersion": "14",
   "resolution": "1080x2400",
   "loggedInAccount": "preserved-session",
-  "activeRunId": "43983516474",
-  "updatedAt": "2026-11-16T23:56:51.888903+00:00"
+  "activeRunId": "44032063432",
+  "updatedAt": "2026-11-17T06:33:42.531299+00:00"
 }
