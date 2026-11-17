@@ -1,11 +1,11 @@
 {
-  "gatewayUrl": "https://terrain-newton-satellite-allan.trycloudflare.com",
+  "gatewayUrl": "https://providers-scheme-combines-horizontal.trycloudflare.com",
   "status": "online",
-  "lastHeartbeat": "2026-11-17T12:10:44.057417+00:00",
+  "lastHeartbeat": "2026-11-17T22:00:36.013377+00:00",
   "deviceModel": "Pixel 7",
   "androidVersion": "14",
   "resolution": "1080x2400",
   "loggedInAccount": "preserved-session",
-  "activeRunId": "44080407069",
-  "updatedAt": "2026-11-17T12:10:44.057417+00:00"
+  "activeRunId": "44185332532",
+  "updatedAt": "2026-11-17T22:00:36.013377+00:00"
 }
