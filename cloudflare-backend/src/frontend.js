@@ -8,7 +8,10 @@ import {
   getChats, saveChatMessage,
   getEmulatorSession, getDeviceState, upsertDeviceState,
   getSettings, upsertSettings,
+  listConversations, getConversation, upsertConversation,
+  renameConversation, deleteConversation, touchConversation,
 } from './database.js';
+import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
 
 const REPO = 'Joshbond123/VEXA';
 const DEFAULT_WORKER_URL = 'https://vexa-ai-agent.replyraven001.workers.dev';
@@ -314,10 +317,24 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
     try {
       const body = await request.json();
       const message = String(body.message || '').trim();
-      const automationId = body.automationId || null;
       if (!message) {
         return Response.json({ error: 'message required' }, { status: 400, headers: corsHeaders() });
       }
+
+      // Resolve the conversation this message belongs to. A new one is created
+      // on the first message so history survives refreshes and browser restarts.
+      let conversationId = body.conversationId || null;
+      let conversation = conversationId ? await getConversation(env.DB, conversationId) : null;
+      if (!conversation) {
+        conversationId = conversationId || `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        conversation = await upsertConversation(env.DB, {
+          id: conversationId,
+          title: deriveTitle(message),
+          automationId: body.automationId || null,
+          status: 'active',
+        }) || { id: conversationId, title: deriveTitle(message), automationId: body.automationId || null, status: 'active' };
+      }
+      const automationId = conversation.automationId || body.automationId || null;
 
       const session = (await env.SESSION_KV.get('emulator:default'))
         ? JSON.parse(await env.SESSION_KV.get('emulator:default'))
@@ -360,8 +377,8 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
           content: `You are VEXA, an autonomous AI agent that operates a real Android phone. You are chatting with the operator.
 ${deviceContext}
 Be concise and concrete. When the user asks you to do something on the phone and the device is online, describe the exact steps you will take, then finish your reply with a single line of the form:
-ACTION: {"action":"tap|swipe|scroll|type|key|back|home|launch|wait","x":0,"y":0,"text":"","app":""}
-Only include the ACTION line when you are actually taking a step on the device. Omit it for pure conversation.`,
+ACTION: {"action":"tap|swipe|scroll|type|key|back|home|launch","x":0,"y":0,"text":"","app":""}
+Coordinates MUST be integer PIXELS in the device's own resolution (top-left is 0,0), never fractions. Only include the ACTION line when you are actually taking a step on the device. Omit it for pure conversation. Never emit "wait" or an empty action.`,
         },
       ];
 
@@ -394,8 +411,12 @@ Only include the ACTION line when you are actually taking a step on the device. 
       if (actionMatch) {
         reply = reply.replace(actionMatch[0], '').trim();
         try {
-          const action = JSON.parse(actionMatch[1]);
-          if (online && action && action.action) {
+          const parsed = JSON.parse(actionMatch[1]);
+          // The model often emits normalised (0..1) coordinates; scale them to
+          // real pixels or the emulator taps the top-left corner and the phone
+          // looks frozen.
+          const action = normalizeDeviceAction(parsed, resolutionFromSession(session) || DEFAULT_RESOLUTION);
+          if (online && action && action.action && action.action !== 'wait') {
             await upsertDeviceState(env.DB, {
               lastAction: JSON.stringify(action),
               lastActionResult: 'pending',
@@ -405,13 +426,14 @@ Only include the ACTION line when you are actually taking a step on the device. 
         } catch { /* ignore malformed action */ }
       }
 
-      if (automationId) {
-        await saveChatMessage(env.DB, { id: `msg_${Date.now()}_u`, automationId, role: 'user', content: message, timestamp: new Date().toISOString() });
-        await saveChatMessage(env.DB, { id: `msg_${Date.now()}_a`, automationId, role: 'agent', content: reply, timestamp: new Date().toISOString() });
-      }
+      const now = Date.now();
+      await saveChatMessage(env.DB, { id: `msg_${now}_u`, automationId: conversationId, role: 'user', content: message, timestamp: new Date(now).toISOString() });
+      await saveChatMessage(env.DB, { id: `msg_${now}_a`, automationId: conversationId, role: 'agent', content: reply, timestamp: new Date(now + 1).toISOString() });
+      await touchConversation(env.DB, conversationId);
 
       return Response.json({
         ok: true, reply, provider: ai.provider, deviceOnline: online, queuedAction,
+        conversationId, title: conversation.title,
       }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
@@ -503,5 +525,74 @@ Only include the ACTION line when you are actually taking a step on the device. 
     }
   }
 
+  // === Conversations (persistent chat history) ===
+  if (path === '/api/frontend/conversations' && method === 'GET') {
+    try {
+      const conversations = await listConversations(env.DB);
+      return Response.json({ ok: true, conversations }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  if (path === '/api/frontend/conversations' && method === 'POST') {
+    try {
+      const body = await request.json().catch(() => ({}));
+      const id = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const conv = await upsertConversation(env.DB, {
+        id,
+        title: (body.title || 'New chat').slice(0, 120),
+        automationId: body.automationId || null,
+        status: 'active',
+      });
+      return Response.json({ ok: true, conversation: conv }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  if (path.match(/^\/api\/frontend\/conversations\/[^/]+\/messages$/) && method === 'GET') {
+    try {
+      const id = path.split('/')[4];
+      const messages = await getChats(env.DB, id, 500);
+      return Response.json({ ok: true, messages }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  if (path.match(/^\/api\/frontend\/conversations\/[^/]+$/) && method === 'PATCH') {
+    try {
+      const id = path.split('/').pop();
+      const body = await request.json().catch(() => ({}));
+      const title = String(body.title || '').trim();
+      if (!title) return Response.json({ error: 'title required' }, { status: 400, headers: corsHeaders() });
+      const conv = await renameConversation(env.DB, id, title.slice(0, 120));
+      return Response.json({ ok: true, conversation: conv }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  if (path.match(/^\/api\/frontend\/conversations\/[^/]+$/) && method === 'DELETE') {
+    try {
+      const id = path.split('/').pop();
+      await deleteConversation(env.DB, id);
+      return Response.json({ ok: true, deleted: id }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
   return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
+}
+
+/** Derive a short, meaningful chat title from the first user message. */
+function deriveTitle(message) {
+  const clean = String(message || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return 'New chat';
+  const words = clean.split(' ');
+  let title = words.slice(0, 8).join(' ');
+  if (words.length > 8) title += '\u2026';
+  return title.slice(0, 60) || 'New chat';
 }

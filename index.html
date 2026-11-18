@@ -193,21 +193,31 @@
 
           <!-- CHAT -->
           <div class="panel chat-panel">
-            <div class="panel-head">
-              <div class="panel-head-main">
-                <div class="chat-avatar"><svg class="ic"><use href="#i-sparkle"/></svg></div>
-                <div>
-                  <h2>VEXA Agent</h2>
-                  <div class="chat-sub" id="chatSub">Ask anything, or give a task for the phone</div>
+            <div class="chat-shell">
+              <aside class="chat-history" id="chatHistory">
+                <div class="chat-history-head">
+                  <span>Chats</span>
+                  <button class="btn btn-icon btn-ghost btn-sm" id="newChatBtn" title="New chat"><svg class="ic"><use href="#i-plus"/></svg></button>
                 </div>
-              </div>
-              <div class="panel-head-actions">
-                <select id="chatAutoSelect" class="chat-select" title="Link a task"></select>
-                <button class="btn btn-icon btn-ghost" id="chatClearBtn" title="Clear conversation"><svg class="ic"><use href="#i-close"/></svg></button>
-              </div>
-            </div>
+                <input id="chatSearchInput" class="chat-search" type="search" placeholder="Search chats…" autocomplete="off" />
+                <div class="chat-history-list" id="chatHistoryList"></div>
+              </aside>
+              <div class="chat-main">
+                <div class="panel-head">
+                  <div class="panel-head-main">
+                    <div class="chat-avatar"><svg class="ic"><use href="#i-sparkle"/></svg></div>
+                    <div>
+                      <h2 id="chatTitle">VEXA Agent</h2>
+                      <div class="chat-sub" id="chatSub">Ask anything, or give a task for the phone</div>
+                    </div>
+                  </div>
+                  <div class="panel-head-actions">
+                    <button class="btn btn-icon btn-ghost btn-sm" id="chatHistoryToggle" title="Chat history"><svg class="ic"><use href="#i-grid"/></svg></button>
+                    <button class="btn btn-icon btn-ghost" id="chatClearBtn" title="Clear conversation"><svg class="ic"><use href="#i-close"/></svg></button>
+                  </div>
+                </div>
 
-            <div id="chatMessages" class="chat-messages"></div>
+                <div id="chatMessages" class="chat-messages"></div>
 
             <div class="chat-suggest" id="chatSuggest">
               <button class="chip" data-prompt="What's on the phone screen right now?">What's on screen?</button>
@@ -220,6 +230,8 @@
               <textarea id="chatInput" rows="1" placeholder="Message VEXA…  (e.g. &quot;Open Chrome and search for weather&quot;)" autocomplete="off"></textarea>
               <button type="submit" class="btn btn-primary composer-send" id="chatSendBtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
             </form>
+              </div>
+            </div>
           </div>
         </div>
       </section>

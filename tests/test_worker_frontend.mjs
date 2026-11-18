@@ -36,15 +36,22 @@ function createKv(seed = {}) {
 // unchanged; only the storage engine is replaced.
 function createDb() {
   const tables = { device_state: null, emulator_sessions: null };
+  // Row-store tables (conversations, chats) keyed by id, so the real
+  // ON CONFLICT / SELECT / DELETE SQL the handlers use can run unchanged.
+  const rows = { conversations: new Map(), chats: new Map(), chat_messages: new Map() };
+  const listTable = (name) => Array.from(rows[name].values());
   return {
     tables,
+    rows,
     prepare(sql) {
+      const q = { sql, _args: [] };
       return {
         _args: [],
         bind(...args) { this._args = args; return this; },
         async first() {
           if (/FROM device_state/i.test(sql)) return tables.device_state;
           if (/FROM emulator_sessions/i.test(sql)) return tables.emulator_sessions;
+          if (/FROM conversations\s+WHERE\s+id/i.test(sql)) return rows.conversations.get(this._args[0]) || null;
           return null;
         },
         async run() {
@@ -53,22 +60,53 @@ function createDb() {
           if (ins) {
             const row = {};
             ins[2].split(',').map((c) => c.trim()).forEach((c, i) => { row[c] = args[i]; });
-            tables[ins[1]] = row;
+            if (rows[ins[1]]) {
+              const existing = rows[ins[1]].get(row.id) || {};
+              rows[ins[1]].set(row.id, { ...existing, ...row });
+            } else {
+              tables[ins[1]] = row;
+            }
             return { success: true };
           }
           const upd = sql.match(/UPDATE (\w+) SET (.+?) WHERE/i);
           if (upd) {
-            const cols = upd[2].split(',').map((s) => s.trim().split('=')[0].trim());
-            const row = tables[upd[1]] || {};
-            cols.forEach((c, i) => { row[c] = args[i]; });
-            tables[upd[1]] = row;
+            const cols = upd[2].split(',').map((x) => x.trim().split('=')[0].trim());
+            const target = rows[upd[1]];
+            if (target && this._args.length) {
+              const id = this._args[this._args.length - 1];
+              const row = target.get(id) || {};
+              cols.forEach((c, i) => { row[c] = args[i]; });
+              target.set(id, row);
+            } else {
+              const row = tables[upd[1]] || {};
+              cols.forEach((c, i) => { row[c] = args[i]; });
+              tables[upd[1]] = row;
+            }
             return { success: true };
           }
-          if (/DELETE FROM device_state/i.test(sql)) { tables.device_state = null; return { success: true }; }
-          if (/DELETE FROM emulator_sessions/i.test(sql)) { tables.emulator_sessions = null; return { success: true }; }
+          const del = sql.match(/DELETE FROM (\w+)/i);
+          if (del) {
+            if (rows[del[1]]) { rows[del[1]].delete(this._args[0]); return { success: true }; }
+            tables[del[1]] = null;
+            return { success: true };
+          }
           return { success: true };
         },
-        async all() { return { results: [] }; },
+        async all() {
+          if (/FROM conversations/i.test(sql)) {
+            const out = listTable('conversations')
+              .map((c) => ({ ...c, message_count: listTable('chat_messages').filter((m) => m.conversation_id === c.id).length }))
+              .sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : (a.id < b.id ? 1 : -1)));
+            return { results: out };
+          }
+          if (/FROM chat_messages/i.test(sql)) {
+            return { results: listTable('chat_messages').filter((m) => m.conversation_id === this._args[0]) };
+          }
+          if (/FROM chats/i.test(sql)) {
+            return { results: listTable('chats').filter((m) => m.automation_id === this._args[0]) };
+          }
+          return { results: [] };
+        },
       };
     },
   };
@@ -436,3 +474,57 @@ await test('public device-state exposes camelCase fields the agent reads', async
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
+
+/* ---------------------------------------------------------- conversations */
+
+await test('a chat message creates a conversation with a derived title', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ choices: [{ message: { content: 'Sure.' } }] });
+  try {
+    const db = createDb();
+    const env = {
+      CONFIG_KV: createKv({ settings_config: JSON.stringify({ provider: 'nvidia', apiKeyEncrypted: 'nvapi-x' }) }),
+      SESSION_KV: createKv(), DB: db,
+    };
+    const res = await handleFrontend(
+      req('/api/frontend/chat', 'POST', { message: 'Open the Calculator app and multiply 127 by 83' }),
+      env, {}, null, corsHeaders,
+    );
+    const data = await res.json();
+    assert.ok(data.conversationId, 'a conversation id is returned');
+    assert.match(data.title, /Open the Calculator/);
+    assert.equal(db.rows.conversations.size, 1, 'the conversation is persisted');
+    assert.equal(db.rows.chat_messages.size, 2, 'both the user and agent messages are stored');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test('conversations survive and list newest first', async () => {
+  const db = createDb();
+  const env = { CONFIG_KV: createKv(), SESSION_KV: createKv(), DB: db };
+  await handleFrontend(req('/api/frontend/conversations', 'POST', { title: 'First chat' }), env, {}, null, corsHeaders);
+  await new Promise((r) => setTimeout(r, 20));
+  await handleFrontend(req('/api/frontend/conversations', 'POST', { title: 'Second chat' }), env, {}, null, corsHeaders);
+
+  const res = await handleFrontend(req('/api/frontend/conversations', 'GET'), env, {}, null, corsHeaders);
+  const data = await res.json();
+  assert.equal(data.conversations.length, 2, 'both chats are listed after a reload');
+  assert.equal(data.conversations[0].title, 'Second chat', 'newest chat is first');
+});
+
+await test('a conversation can be renamed and deleted', async () => {
+  const db = createDb();
+  const env = { CONFIG_KV: createKv(), SESSION_KV: createKv(), DB: db };
+  const created = await (await handleFrontend(req('/api/frontend/conversations', 'POST', { title: 'Old' }), env, {}, null, corsHeaders)).json();
+  const id = created.conversation.id;
+
+  const renamed = await (await handleFrontend(req(`/api/frontend/conversations/${id}`, 'PATCH', { title: 'Renamed' }), env, {}, null, corsHeaders)).json();
+  assert.equal(renamed.conversation.title, 'Renamed');
+
+  await handleFrontend(req(`/api/frontend/conversations/${id}`, 'DELETE'), env, {}, null, corsHeaders);
+  const list = await (await handleFrontend(req('/api/frontend/conversations', 'GET'), env, {}, null, corsHeaders)).json();
+  assert.equal(list.conversations.length, 0, 'the deleted chat is gone');
+});
+
+console.log(`\n${passed} passed, ${failed} failed`);

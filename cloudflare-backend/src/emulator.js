@@ -11,6 +11,7 @@
  */
 
 import { upsertEmulatorSession, getEmulatorSession, upsertDeviceState, getDeviceState } from './database.js';
+import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
 
 export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   const url = new URL(request.url);
@@ -136,25 +137,24 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   if (path === '/api/emulator/action' && method === 'POST') {
     try {
       const body = await request.json();
-      const { action, x, y, x2, y2, text, keycode, app, ms } = body;
+      const action = normalizeDeviceAction(body, await resolveDeviceResolution(env));
 
       // Validate action
       const validActions = ['tap', 'swipe', 'scroll', 'type', 'key', 'back', 'home', 'launch', 'wait', 'screenshot'];
-      if (!validActions.includes(action)) {
-        return Response.json({ error: `Invalid action: ${action}` }, { status: 400, headers: corsHeaders() });
+      if (!validActions.includes(action.action)) {
+        return Response.json({ error: `Invalid action: ${action.action}` }, { status: 400, headers: corsHeaders() });
       }
 
       // Store the action in device state for the emulator to pick up. Only the
       // action fields are written: upsertDeviceState merges, so the current
       // screenshot and UI tree survive and the live preview keeps updating while
       // an action is in flight.
-      const actionPayload = JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms });
       await upsertDeviceState(env.DB, {
-        lastAction: actionPayload,
+        lastAction: JSON.stringify(action),
         lastActionResult: 'pending',
       });
 
-      return Response.json({ ok: true, action, queued: true }, { headers: corsHeaders() });
+      return Response.json({ ok: true, action: action.action, queued: true }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
     }
@@ -250,6 +250,18 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   }
 
   return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
+}
+
+/* Resolve the device's real pixel resolution so normalised coordinates can be
+ * converted to pixels. Falls back to a default when unknown. */
+async function resolveDeviceResolution(env) {
+  try {
+    const raw = await env.SESSION_KV?.get('emulator:default');
+    const session = raw ? JSON.parse(raw) : await getEmulatorSession(env.DB);
+    return resolutionFromSession(session);
+  } catch {
+    return DEFAULT_RESOLUTION;
+  }
 }
 
 async function verifyAccessToken(token, env) {

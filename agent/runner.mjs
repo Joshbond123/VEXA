@@ -33,7 +33,9 @@ fs.mkdirSync(CHATS_DIR, { recursive: true });
 /* ------------------------------------------------------------------ config */
 const NVIDIA_API_KEY = (process.env.NVIDIA_API_KEY || '').trim();
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'nvidia/nemotron-3.5-super-vl-120b-a12b';
-const NVIDIA_TIMEOUT_MS = Number(process.env.NVIDIA_TIMEOUT_MS || '30000');
+// Nemotron is a reasoning model and routinely needs >30s to emit its JSON
+// decision; the old 30s abort made the provider look down mid-task.
+const NVIDIA_TIMEOUT_MS = Number(process.env.NVIDIA_TIMEOUT_MS || '90000');
 const XAI_API_KEY = (process.env.XAI_API_KEY || '').trim();
 const XAI_MODEL = process.env.XAI_MODEL || 'grok-2-vision-1212';
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
@@ -526,9 +528,21 @@ async function callProvider(provider, messages, attempt = 1) {
     }
     throw new Error(`${provider.label} API error ${status}: ${txt.slice(0, 400)}`);
   }
+  return parseCompletion(await res.json(), provider.label);
+}
 
-  const json = await res.json();
-  return parseCompletion(json, provider.label);
+/* A timeout/abort is transient for a slow reasoning provider: retry once with a
+ * longer budget before giving up and falling back. */
+async function callProviderWithRetry(provider, messages) {
+  try {
+    return await callProvider(provider, messages);
+  } catch (err) {
+    if (/abort|timeout/i.test(err.message || '')) {
+      await sleep(1200);
+      return callProvider(provider, messages, 2);
+    }
+    throw err;
+  }
 }
 
 async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHierarchy, deviceState, stuckHint }) {
@@ -570,7 +584,7 @@ async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHie
   for (const provider of PROVIDERS) {
     if (!provider.key) continue;
     try {
-      const raw = await callProvider(provider, messages);
+      const raw = await callProviderWithRetry(provider, messages);
       const decision = extractJson(raw);
       decision._provider = provider.id;
       return decision;

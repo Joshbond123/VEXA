@@ -1371,11 +1371,22 @@ async function handleGatewayRpc(action, payload) {
     }
     case 'input_event': {
       const kind = payload?.kind;
+      // Defensive normalisation: a caller may still send normalised (0..1)
+      // coordinates. Rounding 0.16 to 0 taps the corner, so scale anything in
+      // 0..1 to real pixels before it reaches `input tap`.
+      const devW = liveDevice?.width || liveDevice?.screenWidth || 1080;
+      const devH = liveDevice?.height || liveDevice?.screenHeight || 2400;
+      const coord = (v, span) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        if (n > 0 && n <= 1) return Math.round(n * span);
+        return Math.round(n);
+      };
       if (kind === 'tap') {
-        await adbShell(`input tap ${Math.round(Number(payload.x || 0))} ${Math.round(Number(payload.y || 0))}`);
+        await adbShell(`input tap ${coord(payload.x, devW)} ${coord(payload.y, devH)}`);
       } else if (kind === 'swipe') {
         await adbShell(
-          `input swipe ${Math.round(Number(payload.x1 || 0))} ${Math.round(Number(payload.y1 || 0))} ${Math.round(Number(payload.x2 || 0))} ${Math.round(Number(payload.y2 || 0))} ${Math.round(Number(payload.duration_ms || 250))}`
+          `input swipe ${coord(payload.x1, devW)} ${coord(payload.y1, devH)} ${coord(payload.x2, devW)} ${coord(payload.y2, devH)} ${Math.round(Number(payload.duration_ms || 250))}`
         );
       } else if (kind === 'keyevent') {
         await adbShell(`input keyevent ${Math.round(Number(payload.keycode || 3))}`);

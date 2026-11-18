@@ -20,6 +20,8 @@
   const state = {
     automations: [],
     activeAutoId: '',
+    conversations: [],
+    activeConversationId: '',
     chat: [],
     device: { online: false, hasFrame: false, frameFresh: false, model: '', version: '', resolution: '' },
     streamTimer: null,
@@ -216,6 +218,123 @@
   }
 
   /* ================================================================= CHAT */
+  /* ------------------------------------------------- conversations (history) */
+  function humanAction(a) {
+    if (!a || !a.action) return 'device action';
+    switch (a.action) {
+      case 'tap': return `Tapping the screen at ${a.x},${a.y}`;
+      case 'swipe': return 'Swiping the screen';
+      case 'scroll': return `Scrolling ${a.direction || 'down'}`;
+      case 'type': return `Typing "${a.text || ''}"`;
+      case 'launch': return `Opening ${a.app || a.text || 'an app'}`;
+      case 'back': return 'Pressing Back';
+      case 'home': return 'Going to the home screen';
+      case 'key': return `Pressing key ${a.keycode}`;
+      default: return `Running ${a.action}`;
+    }
+  }
+
+  function relTime(iso) {
+    if (!iso) return '';
+    const diff = Date.now() - new Date(iso).getTime();
+    if (Number.isNaN(diff)) return '';
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
+  async function loadConversations() {
+    try {
+      const d = await api('/api/frontend/conversations');
+      state.conversations = Array.isArray(d.conversations) ? d.conversations : [];
+      renderConversations();
+    } catch { /* sidebar is non-critical */ }
+  }
+
+  function renderConversations() {
+    const list = $('chatHistoryList');
+    if (!list) return;
+    const q = ($('chatSearchInput')?.value || '').trim().toLowerCase();
+    const items = state.conversations.filter((c) => !q || (c.title || '').toLowerCase().includes(q));
+    if (!items.length) {
+      list.innerHTML = `<div class="chat-history-empty">${q ? 'No matching chats' : 'No chats yet'}</div>`;
+      return;
+    }
+    list.innerHTML = '';
+    for (const c of items) {
+      const el = document.createElement('div');
+      el.className = `chat-item${c.id === state.activeConversationId ? ' active' : ''}`;
+      el.dataset.id = c.id;
+      el.innerHTML = `
+        <div class="chat-item-body">
+          <div class="chat-item-title">${esc(c.title || 'New chat')}</div>
+          <div class="chat-item-meta">${esc(relTime(c.updatedAt))}${c.automationId ? ' · <span class="action-tag">task</span>' : ''}</div>
+        </div>
+        <button class="chat-item-del" title="Delete chat">${icon('i-close')}</button>`;
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.chat-item-del')) return;
+        openConversation(c.id);
+      });
+      el.querySelector('.chat-item-del').addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteChat(c);
+      });
+      list.appendChild(el);
+    }
+  }
+
+  async function openConversation(id) {
+    if (!id) return;
+    state.activeConversationId = id;
+    const conv = state.conversations.find((c) => c.id === id);
+    const title = $('chatTitle');
+    if (title) title.textContent = conv?.title || 'VEXA Agent';
+    const box = $('chatMessages');
+    if (box) box.innerHTML = '';
+    state.chat = [];
+    try {
+      const d = await api(`/api/frontend/conversations/${encodeURIComponent(id)}/messages`);
+      for (const m of (d.messages || [])) {
+        if (m.role === 'system') continue;
+        appendMessage(m.role, m.content, relTime(m.timestamp));
+        state.chat.push({ role: m.role, content: m.content });
+      }
+      if (!state.chat.length) renderWelcome();
+    } catch {
+      renderWelcome();
+    }
+    renderConversations();
+    $('chatHistory')?.classList.remove('open');
+  }
+
+  function newChat() {
+    state.activeConversationId = '';
+    state.chat = [];
+    const title = $('chatTitle');
+    if (title) title.textContent = 'VEXA Agent';
+    const box = $('chatMessages');
+    if (box) box.innerHTML = '';
+    renderWelcome();
+    renderConversations();
+    $('chatSuggest')?.classList.remove('hidden');
+    $('chatHistory')?.classList.remove('open');
+  }
+
+  async function deleteChat(conv) {
+    if (!confirm(`Delete "${conv.title || 'this chat'}"? This cannot be undone.`)) return;
+    try {
+      await api(`/api/frontend/conversations/${encodeURIComponent(conv.id)}`, { method: 'DELETE' });
+      if (state.activeConversationId === conv.id) newChat();
+      await loadConversations();
+      toast('Chat deleted', 'ok');
+    } catch (err) {
+      toast(`Delete failed: ${err.message}`, 'err');
+    }
+  }
+
   function renderWelcome() {
     const box = $('chatMessages');
     if (!box) return;
@@ -300,6 +419,7 @@
         method: 'POST',
         body: JSON.stringify({
           message: msg,
+          conversationId: state.activeConversationId || null,
           automationId: state.activeAutoId || null,
           history: state.chat.slice(-8),
         }),
@@ -312,8 +432,12 @@
       } else {
         appendMessage('agent', data.reply);
         state.chat.push({ role: 'agent', content: data.reply });
+        if (data.conversationId && data.conversationId !== state.activeConversationId) {
+          state.activeConversationId = data.conversationId;
+          loadConversations();
+        }
         if (data.queuedAction) {
-          appendMessage('system', `queued device action: ${JSON.stringify(data.queuedAction)}`);
+          appendMessage('system', humanAction(data.queuedAction));
           setTimeout(pullFrame, 1200);
         }
       }
@@ -703,7 +827,10 @@
     on($('chatInput'), 'keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat($('chatInput').value); }
     });
-    on($('chatClearBtn'), 'click', () => { state.chat = []; renderWelcome(); const s = $('chatSuggest'); if (s) s.classList.remove('hidden'); });
+    on($('chatClearBtn'), 'click', () => newChat());
+    on($('newChatBtn'), 'click', () => newChat());
+    on($('chatHistoryToggle'), 'click', () => $('chatHistory')?.classList.toggle('open'));
+    on($('chatSearchInput'), 'input', () => renderConversations());
     on($('chatAutoSelect'), 'change', (e) => { state.activeAutoId = e.target.value; });
     document.querySelectorAll('.chip').forEach((c) => on(c, 'click', () => sendChat(c.dataset.prompt)));
 
@@ -726,6 +853,7 @@
     setupPhoneInput();
     renderWelcome();
     await loadAutomations();
+    await loadConversations();
     await refreshStatus();
     state.statusTimer = setInterval(refreshStatus, STATUS_POLL_MS);
   }

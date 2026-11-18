@@ -24,6 +24,18 @@ export async function initDatabase(db) {
   // Add ui_hierarchy column to existing databases (SQLite doesn't support ADD COLUMN IF NOT EXISTS)
   try { await db.exec(`ALTER TABLE device_state ADD COLUMN ui_hierarchy TEXT`); } catch { /* column may already exist */ }
   await db.exec(`CREATE TABLE IF NOT EXISTS provider_usage (id TEXT PRIMARY KEY DEFAULT 'default', provider TEXT NOT NULL, requests_count INTEGER DEFAULT 0, errors_count INTEGER DEFAULT 0, last_used TEXT, rate_limited_until TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  // A conversation is a chat thread. `chats.automation_id` doubles as the
+  // conversation id so existing message rows keep working; `conversations`
+  // carries the title, timestamps and automation link the sidebar needs.
+  await db.exec(`CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT 'New chat', automation_id TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  // `chats` carried a FOREIGN KEY to automations, so a conversation that is not
+  // an automation could not store messages ("FOREIGN KEY constraint failed").
+  // chat_messages has no such constraint; conversations are the parent now.
+  await db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, execution_id TEXT)`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, timestamp)`);
+  // One-time carry-over of any messages written to the old table.
+  await db.exec(`INSERT OR IGNORE INTO chat_messages (id, conversation_id, role, content, timestamp, execution_id) SELECT id, automation_id, role, content, timestamp, execution_id FROM chats`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_chats_automation_id ON chats(automation_id)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_chats_timestamp ON chats(timestamp)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_executions_automation_id ON executions(automation_id)`);
@@ -101,7 +113,7 @@ export async function saveExecution(db, execution) {
 }
 
 export async function saveChatMessage(db, message) {
-  await db.prepare(`INSERT INTO chats (id, automation_id, role, content, timestamp, execution_id) VALUES (?, ?, ?, ?, ?, ?)`).bind(
+  await db.prepare(`INSERT INTO chat_messages (id, conversation_id, role, content, timestamp, execution_id) VALUES (?, ?, ?, ?, ?, ?)`).bind(
     message.id,
     message.automationId,
     message.role,
@@ -111,9 +123,16 @@ export async function saveChatMessage(db, message) {
   ).run();
 }
 
-export async function getChats(db, automationId, limit = 100) {
-  const { results } = await db.prepare('SELECT * FROM chats WHERE automation_id = ? ORDER BY timestamp DESC LIMIT ?').bind(automationId, limit).all();
-  return results.map(snakeToCamel).reverse();
+export async function getChats(db, conversationId, limit = 100) {
+  const { results } = await db.prepare('SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY timestamp DESC LIMIT ?').bind(conversationId, limit).all();
+  return results.map((r) => ({
+    id: r.id,
+    conversationId: r.conversation_id,
+    role: r.role,
+    content: r.content,
+    timestamp: r.timestamp,
+    executionId: r.execution_id || null,
+  })).reverse();
 }
 
 export async function getEmulatorSession(db) {
@@ -248,4 +267,64 @@ export async function upsertDeviceState(db, state) {
       new Date().toISOString()
     ).run();
   }
+}
+/* ------------------------------------------------------------------ conversations */
+
+export async function listConversations(db, limit = 100) {
+  const { results } = await db.prepare(
+    `SELECT c.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id) AS message_count
+     FROM conversations c ORDER BY c.updated_at DESC, c.id DESC LIMIT ?`
+  ).bind(limit).all();
+  return results.map((r) => ({
+    id: r.id,
+    title: r.title,
+    automationId: r.automation_id || null,
+    status: r.status || 'active',
+    messageCount: Number(r.message_count || 0),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }));
+}
+
+export async function getConversation(db, id) {
+  const row = await db.prepare('SELECT * FROM conversations WHERE id = ?').bind(id).first();
+  return row ? snakeToCamel(row) : null;
+}
+
+export async function upsertConversation(db, conv) {
+  const now = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO conversations (id, title, automation_id, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       title = COALESCE(excluded.title, conversations.title),
+       automation_id = COALESCE(excluded.automation_id, conversations.automation_id),
+       status = COALESCE(excluded.status, conversations.status),
+       updated_at = excluded.updated_at`
+  ).bind(
+    conv.id,
+    conv.title || 'New chat',
+    conv.automationId || null,
+    conv.status || 'active',
+    conv.createdAt || now,
+    conv.updatedAt || now
+  ).run();
+  return getConversation(db, conv.id);
+}
+
+export async function renameConversation(db, id, title) {
+  await db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?')
+    .bind(title, new Date().toISOString(), id).run();
+  return getConversation(db, id);
+}
+
+export async function deleteConversation(db, id) {
+  await db.prepare('DELETE FROM chat_messages WHERE conversation_id = ?').bind(id).run();
+  await db.prepare('DELETE FROM conversations WHERE id = ?').bind(id).run();
+}
+
+/** Touch a conversation so the sidebar sorts by real last activity. */
+export async function touchConversation(db, id) {
+  await db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
+    .bind(new Date().toISOString(), id).run();
 }

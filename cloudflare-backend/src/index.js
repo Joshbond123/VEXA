@@ -11,6 +11,7 @@
 
 import { handleAuth } from './auth.js';
 import { handleEmulator } from './emulator.js';
+import { normalizeDeviceAction, DEFAULT_RESOLUTION } from './device-actions.js';
 import { handleAgent } from './agent.js';
 import { handleFrontend } from './frontend.js';
 import { handleSettings } from './settings.js';
@@ -171,20 +172,20 @@ export default {
     if (path === '/api/agent/action' && method === 'POST') {
       try {
         const body = await request.json();
-        const { action, x, y, x2, y2, text, keycode, app, ms } = body;
+        const action = normalizeDeviceAction(body, DEFAULT_RESOLUTION);
 
         const validActions = ['tap', 'swipe', 'scroll', 'type', 'key', 'back', 'home', 'launch', 'wait', 'screenshot'];
-        if (!validActions.includes(action)) {
-          return Response.json({ error: `Invalid action: ${action}` }, { status: 400, headers: corsHeaders() });
+        if (!validActions.includes(action.action)) {
+          return Response.json({ error: `Invalid action: ${action.action}` }, { status: 400, headers: corsHeaders() });
         }
 
         // Store the action in device state for the emulator to pick up
         await upsertDeviceState(env.DB, {
-          lastAction: JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms }),
+          lastAction: JSON.stringify(action),
           lastActionResult: 'pending',
         });
 
-        return Response.json({ ok: true, action, queued: true }, { headers: corsHeaders() });
+        return Response.json({ ok: true, action: action.action, queued: true }, { headers: corsHeaders() });
       } catch (err) {
         return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
       }
