@@ -1,8 +1,8 @@
 {
-  "gatewayUrl": "https://providers-scheme-combines-horizontal.trycloudflare.com",
+  "gatewayUrl": "https://vexa-ai-agent.replyraven001.workers.dev",
   "status": "online",
-  "lastHeartbeat": "2026-11-17T22:00:36.013377+00:00",
-  "deviceModel": "Pixel 7",
+  "lastHeartbeat": "2026-11-18T00:08:21.745Z",
+  "deviceModel": "sdk_gphone64_x86_64",
   "androidVersion": "14",
   "resolution": "1080x2400",
   "loggedInAccount": "preserved-session",
