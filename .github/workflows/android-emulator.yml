@@ -97,11 +97,24 @@ jobs:
       - name: Create AVD (API 28, google_apis, x86_64)
         run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          # avdmanager and the emulator must agree on where AVDs live. Without
+          # this, avdmanager wrote the AVD to its own default location while the
+          # boot step looked in ANDROID_AVD_HOME and failed with
+          # "Unknown AVD name [vexa_android_28]".
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           echo "no" | avdmanager create avd -n "$AVD_NAME" \
             -k "system-images;android-28;google_apis;x86_64" \
             -d "pixel_2" \
             --force
+          test -f "$ANDROID_AVD_HOME/$AVD_NAME.ini" || {
+            echo "::error::AVD $AVD_NAME.ini missing from $ANDROID_AVD_HOME"
+            ls -la "$ANDROID_AVD_HOME" || true
+            exit 1
+          }
           echo "AVD created: $AVD_NAME"
+          emulator -list-avds
 
       - name: Install gateway + mobilerun dependencies
         run: |
