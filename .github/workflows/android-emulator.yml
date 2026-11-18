@@ -23,7 +23,7 @@ jobs:
   run-emulator:
     name: Boot Android Emulator & Register with Cloudflare Gateway
     runs-on: ubuntu-latest
-    timeout-minutes: 260
+    timeout-minutes: 250
     env:
       EMULATOR_ACCESS_TOKEN: ${{ secrets.EMULATOR_ACCESS_TOKEN }}
       EMULATOR_GATEWAY_SECRET: ${{ secrets.EMULATOR_GATEWAY_SECRET }}
@@ -32,7 +32,7 @@ jobs:
       GH_PAT: ${{ secrets.GH_PAT }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       ANDROID_STATE_BRANCH: android-state-v1
-      AVD_NAME: vexa_pixel_7_api30
+      AVD_NAME: vexa_android_28
       CLOUDFLARE_WORKER_URL: https://vexa-ai-agent.replyraven001.workers.dev
 
     steps:
@@ -52,56 +52,54 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
-          ls -la /dev/kvm || echo "KVM device not available - emulator may use software rendering"
+          ls -la /dev/kvm 2>&1 || echo "KVM not available - will use software rendering"
 
-      - name: Install dependencies (ffmpeg, openjdk, wget, unzip)
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg openjdk-17-jdk wget unzip curl
           echo "Dependencies installed"
-          java -version 2>&1 | head -1
 
       - name: Install Android SDK Command-line Tools
         run: |
           mkdir -p $ANDROID_HOME/cmdline-tools
           cd $ANDROID_HOME/cmdline-tools
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          file cmdline-tools.zip
           unzip -q cmdline-tools.zip
           mv cmdline-tools latest
           rm cmdline-tools.zip
-          echo "Android SDK cmdline-tools installed"
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
 
-      - name: Install Android SDK Platform & System Image (google_apis, lighter download)
+      - name: Install Android SDK (API 28 - smaller, faster boot)
         run: |
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "emulator" "platforms;android-30" "system-images;android-30;google_apis;x86_64" "build-tools;30.0.3"
-          echo "SDK components installed"
+          yes | sdkmanager --licenses 2>&1 | tail -5
+          sdkmanager "platform-tools" "emulator" "platforms;android-28" "system-images;android-28;google_apis;x86" "build-tools;28.0.3" 2>&1 | tail -10
 
-      - name: Create AVD (Pixel 7, Android 30, google_apis)
+      - name: Create AVD (API 28, google_apis, x86)
         run: |
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
-          echo "no" | avdmanager create avd -n vexa_pixel_7_api30 \
-            -k "system-images;android-30;google_apis;x86_64" \
+          echo "no" | avdmanager create avd -n vexa_android_28 \
+            -k "system-images;android-28;google_apis;x86" \
             -g google_apis \
-            -b x86_64 \
-            -d "pixel_7" \
+            -b x86 \
+            -d "pixel_2" \
             --force
-          echo "AVD created: vexa_pixel_7_api30"
+          echo "AVD created: vexa_android_28"
 
       - name: Install gateway dependencies
         run: |
           cd android-emulator && npm ci
 
-      - name: Restore whole-AVD checkpoint from VIBELY (Google account pre-provisioned)
+      - name: Restore whole-AVD checkpoint from VIBELY
         if: env.EMULATOR_STATE_KEY != '' && env.GH_PAT != ''
         run: |
           export PYTHONPATH="$PWD/android-emulator${PYTHONPATH:+:$PYTHONPATH}"
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           GITHUB_REPOSITORY=Joshbond123/VIBELY bash "$PWD/android-emulator/restore-whole-avd.sh" || true
         env:
-          AVD_NAME: vexa_pixel_7_api30
+          AVD_NAME: vexa_android_28
           ANDROID_STATE_BRANCH: android-state-v1
 
       - name: Start Android Emulator (headless, no-window)
@@ -109,20 +107,20 @@ jobs:
           export ANDROID_HOME=$HOME/Android/Sdk
           export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH
           export ANDROID_AVD_HOME=$HOME/.android/avd
-          export AVD_NAME=vexa_pixel_7_api30
+          export AVD_NAME=vexa_android_28
 
-          echo "Starting emulator with -no-window -gpu swiftshader_indirect..."
+          echo "Starting emulator (API 28, google_apis, x86, headless)..."
           nohup emulator -avd "$AVD_NAME" \
             -no-window -gpu swiftshader_indirect \
             -noaudio -no-boot-anim -no-snapshot-save \
-            -qemu -enable-kvm -m 2048 \
+            -memory 2048 \
             > /tmp/emulator.log 2>&1 &
           EMULATOR_PID=$!
           echo "Emulator PID: $EMULATOR_PID"
 
           # Wait for adb device
           echo "Waiting for adb device..."
-          for i in $(seq 1 120); do
+          for i in $(seq 1 100); do
             if adb devices 2>/dev/null | grep -q "emulator-5554.*device"; then
               echo "adb device found: emulator-5554"
               break
@@ -132,7 +130,7 @@ jobs:
 
           # Wait for boot completion
           echo "Waiting for boot completion..."
-          for i in $(seq 1 120); do
+          for i in $(seq 1 100); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || echo "0")
             if [ "$BOOT" = "1" ]; then
               echo "Android boot completed!"
@@ -142,10 +140,10 @@ jobs:
           done
 
           # Verify device info
-          adb shell getprop ro.product.model
-          adb shell getprop ro.build.version.release
-          adb shell wm size
-          adb shell input keyevent 82  # wake up device
+          adb shell getprop ro.product.model 2>&1 || true
+          adb shell getprop ro.build.version.release 2>&1 || true
+          adb shell wm size 2>&1 || true
+          adb shell input keyevent 82 2>&1 || true
 
       - name: Run VEXA Emulator Session
         run: |
