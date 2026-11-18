@@ -36,8 +36,6 @@ jobs:
       AVD_NAME: vexa_pixel_7_api34
       # Cloudflare Worker gateway (permanent endpoint)
       CLOUDFLARE_WORKER_URL: https://vexa-ai-agent.replyraven001.workers.dev
-      # Xvfb virtual display for headless screenshot capture
-      DISPLAY: ':99'
 
     steps:
       - name: Checkout VEXA
@@ -58,11 +56,11 @@ jobs:
           sudo udevadm trigger --name-match=kvm || true
           ls -la /dev/kvm || echo "KVM device not available - emulator may use software rendering"
 
-      - name: Install Xvfb virtual framebuffer (fixes headless screenshot capture)
+      - name: Install ffmpeg for headless screenshot extraction
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb x11-utils
-          echo "Xvfb installed successfully"
+          sudo apt-get install -y -qq ffmpeg
+          echo "ffmpeg installed successfully"
 
       - name: Install gateway dependencies
         run: |
@@ -79,18 +77,6 @@ jobs:
           AVD_NAME: vexa_pixel_7_api34
           ANDROID_STATE_BRANCH: android-state-v1
 
-      - name: Start Xvfb virtual display
-        run: |
-          # Start virtual framebuffer on :99 so emulator has a real display surface
-          Xvfb :99 -screen 0 1080x2400x24 -ac +extension GLX +render -noreset &
-          XVFB_PID=$!
-          echo "Xvfb PID: $XVFB_PID"
-          sleep 3
-          # Verify Xvfb is running
-          xdpyinfo -display :99 > /dev/null 2>&1 && echo "Xvfb display :99 is ready" || echo "WARNING: Xvfb may not be ready"
-          # Save PID for later cleanup
-          echo $XVFB_PID > /tmp/xvfb.pid
-
       - name: Boot Android Emulator (Pixel 7, Android 14, Play Store)
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -103,11 +89,9 @@ jobs:
           ram-size: 4096M
           heap-size: 512M
           disk-size: 8192M
-          # CRITICAL: NO -no-window so emulator renders to Xvfb virtual display
-          # swiftshader_indirect = software rendering compatible with Xvfb
-          # Without -no-window, the emulator creates a real window surface on :99
-          # enabling screencap -p to capture actual screenshots
-          emulator-options: -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          # -no-window required for headless CI. Screenshots captured via
+          # adb screenrecord + ffmpeg frame extraction (works headless).
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
           script: bash android-emulator/run-emulator-session.sh
 
       - name: Notify Cloudflare of emulator shutdown
@@ -115,8 +99,3 @@ jobs:
         run: |
           curl -s -X DELETE "${CLOUDFLARE_WORKER_URL}/api/emulator/session" > /dev/null 2>&1 || true
           echo "Emulator session cleanup complete."
-          # Cleanup Xvfb
-          if [ -f /tmp/xvfb.pid ]; then
-            kill $(cat /tmp/xvfb.pid) 2>/dev/null || true
-            echo "Xvfb stopped."
-          fi
