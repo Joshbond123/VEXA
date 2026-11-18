@@ -1,5 +1,51 @@
 [
   {
+    "id": "exec_1794966480036_kzijw",
+    "automationId": "auto_calculator_math_1",
+    "status": "failed",
+    "startedAt": "2026-11-18T01:48:00.036Z",
+    "finishedAt": "2026-11-18T01:48:28.352Z",
+    "taskReceived": "Open the Calculator app on the Android device, compute 127 multiplied by 83, take a screenshot of the result, and report the exact number shown on screen.",
+    "actionsPerformed": [
+      "launch(540,1200) — The screen shows a solid green color, which means the Calculator app is not currently visible. I need to launch the Calculator app first to perform the calculation 127 * 83. [screen unchanged after retries]",
+      "launch(undefined,undefined) — The screen shows a solid green color, which means the Calculator app is not currently visible. I need to launch the Calculator app first to perform the calculation 127 * 83. [screen unchanged after retries]"
+    ],
+    "appsInteracted": [
+      "Calculator"
+    ],
+    "observedResults": "",
+    "outcomeAchieved": false,
+    "failures": "fetch failed",
+    "checkpoints": [
+      {
+        "step": 1,
+        "at": "2026-11-18T01:48:06.747Z",
+        "resuming": false,
+        "error": "Gateway action launch failed (401): {\"error\":\"Unauthorized\"}",
+        "action": "launch",
+        "thought": "The screen shows a solid green color, which means the Calculator app is not currently visible. I need to launch the Calculator app first to perform the calculation 127 * 83.",
+        "provider": "nvidia",
+        "screenChanged": false,
+        "lastActionError": "Gateway action launch failed (401): {\"error\":\"Unauthorized\"}",
+        "loopDetected": false
+      },
+      {
+        "step": 2,
+        "at": "2026-11-18T01:48:18.766Z",
+        "resuming": false,
+        "error": "Gateway action launch failed (401): {\"error\":\"Unauthorized\"}",
+        "action": "launch",
+        "thought": "The screen shows a solid green color, which means the Calculator app is not currently visible. I need to launch the Calculator app first to perform the calculation 127 * 83.",
+        "provider": "nvidia",
+        "screenChanged": false,
+        "lastActionError": "Gateway action launch failed (401): {\"error\":\"Unauthorized\"}",
+        "loopDetected": false
+      }
+    ],
+    "nextExecutionScheduled": null,
+    "resuming": false
+  },
+  {
     "id": "exec_1794961109058_pfd2m",
     "automationId": "auto_calculator_math_1",
     "status": "failed",
