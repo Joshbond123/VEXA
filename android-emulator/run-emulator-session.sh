@@ -8,16 +8,17 @@
 #   - Agent runner → POST /api/emulator/action → stored in Cloudflare D1
 #   - Emulator → GET /api/emulator/pending-action → picks up action
 #   - Emulator → executes action via ADB → POST /api/emulator/action-result
-#   - Emulator → captures screenshot via adb screenrecord + ffmpeg → POST /api/emulator/screenshot → stored in D1
+#   - Emulator → captures screenshot via `adb exec-out screencap -p` → POST /api/emulator/screenshot → stored in D1
 #   - Emulator → captures UI hierarchy via uiautomator dump → stored in D1
 #   - Agent runner → GET /api/public/screenshot → reads latest screenshot from D1
 #   - Agent runner → GET /api/public/device-state → reads UI hierarchy from D1
 #
 # HEADLESS SCREENSHOT METHOD:
-#   adb screencap -p returns 1x1 green pixel on headless (-no-window) emulators.
-#   Instead we use adb screenrecord to encode H.264 video and ffmpeg to extract
-#   individual PNG frames. This works on headless emulators because screenrecord
-#   captures from the video encoder directly, not the framebuffer.
+#   `adb exec-out screencap -p` redirected straight to a file streams a complete
+#   PNG in under a second and is the primary capture path. The older screenrecord
+#   + ffmpeg frame extraction was removed: it produced 1x1 frames and raced with
+#   the encoder. mobilerun's `screencap -p <file>` path is avoided too — on a
+#   software-rendered emulator it takes 60-90s and can hang indefinitely.
 set -uo pipefail
 
 CLOUDFLARE_WORKER_URL="https://vexa-ai-agent.replyraven001.workers.dev"
@@ -47,11 +48,23 @@ RESOLUTION=$(adb shell wm size 2>/dev/null | grep -oP '\d+x\d+' || echo "1080x24
 
 echo "Device: $DEVICE_MODEL Android $ANDROID_VERSION $RESOLUTION"
 
-# Start VEXA ADB Bridge AFTER emulator is ready (for local device control)
-PORT=8080 node android-emulator/vexa-bridge.mjs > /tmp/gateway.log 2>&1 &
+# Start the mobilerun device bridge (HTTP on 127.0.0.1:8765). This is what the
+# agent runner talks to for screenshots, UI trees, and taps — it must be up
+# before the agent starts, otherwise the agent is blind and falls back to the
+# Cloudflare relay. Port is fixed so MOBILERUN_BRIDGE=http://127.0.0.1:8765.
+echo "Starting mobilerun device bridge..."
+MOBILERUN_SERIAL="$(adb devices | awk '/\tdevice$/{print $1; exit}')" \
+MOBILERUN_PORT=8765 \
+nohup python3 vexa-api/android/mobilerun_bridge.py > /tmp/mobilerun-bridge.log 2>&1 &
 BRIDGE_PID=$!
-echo "VEXA ADB Bridge PID: $BRIDGE_PID"
-sleep 3
+echo "mobilerun bridge PID: $BRIDGE_PID (serial=${MOBILERUN_SERIAL:-auto})"
+for i in $(seq 1 20); do
+  if curl -sf --max-time 5 http://127.0.0.1:8765/health > /tmp/bridge-health.json 2>/dev/null; then
+    echo "mobilerun bridge is up: $(cat /tmp/bridge-health.json)"
+    break
+  fi
+  sleep 2
+done
 
 # Register emulator with Cloudflare Worker gateway (permanent endpoint)
 echo "Registering emulator with Cloudflare Worker gateway..."
@@ -132,58 +145,26 @@ HEARTBEAT_PID=$!
 echo "Heartbeat PID: $HEARTBEAT_PID"
 
 # --- SCREENSHOT & UI HIERARCHY UPLOAD LOOP ---
-# Captures screenshots via adb screenrecord + ffmpeg (works on headless emulators)
-# and UI hierarchy via uiautomator dump. Uploads both to Cloudflare Worker.
+# Captures screenshots via `adb exec-out screencap -p` and UI hierarchy via
+# uiautomator dump. Uploads both to the Cloudflare Worker.
 SCREENSHOT_PID=""
-SCREENRECORD_PID=""
 (
-  # Start a continuous screenrecord process that outputs H.264 to stdout.
-  # We extract individual frames using ffmpeg on demand.
-  # screenrecord runs continuously so we don't pay the startup cost per frame.
-  echo "Starting screenrecord stream..."
-  adb shell screenrecord --verbose --output-format=h264 --bit-rate 4000000 /sdcard/vexa_record.mp4 2>/dev/null &
-  SCREENRECORD_PID=$!
-  sleep 2
-
   while true; do
     SCREENSHOT_DATA=""
     SCREENSHOT_SIZE=0
     UI_HIERARCHY=""
 
-    # --- Screenshot capture: pull a frame from the screenrecord video ---
-    # Pull the video file, extract one frame with ffmpeg
-    adb pull /sdcard/vexa_record.mp4 /tmp/vexa_record.mp4 2>/dev/null || true
-    if [ -f /tmp/vexa_record.mp4 ] && [ -s /tmp/vexa_record.mp4 ]; then
-      FRAME_DATA=$(ffmpeg -y -i /tmp/vexa_record.mp4 -vframes 1 -f image2pipe -vcodec png - 2>/dev/null | base64 -w 0 2>/dev/null || echo "")
-      if [ -n "$FRAME_DATA" ] && [ $(echo -n "$FRAME_DATA" | wc -c) -gt 1000 ]; then
-        SCREENSHOT_DATA="$FRAME_DATA"
-        SCREENSHOT_SIZE=$(echo -n "$FRAME_DATA" | wc -c)
-      fi
-    fi
-
-    # Fallback: try adb screencap -p (may work on some emulator configs)
-    if [ -z "$SCREENSHOT_DATA" ]; then
-      RAW=$(adb exec-out screencap -p 2>/dev/null || true)
-      if [ -n "$RAW" ]; then
-        SIZE=$(echo -n "$RAW" | wc -c)
-        if [ "$SIZE" -gt 1000 ]; then
-          SCREENSHOT_DATA=$(echo -n "$RAW" | base64 -w 0 2>/dev/null || echo "")
-          SCREENSHOT_SIZE=$SIZE
-        fi
-      fi
-    fi
-
-    # Fallback 2: screencap to /sdcard then pull
-    if [ -z "$SCREENSHOT_DATA" ]; then
-      adb shell screencap -p /sdcard/vexa_screen.png 2>/dev/null || true
-      sleep 0.3
-      RAW2=$(adb pull /sdcard/vexa_screen.png - 2>/dev/null || true)
-      if [ -n "$RAW2" ]; then
-        SIZE2=$(echo -n "$RAW2" | wc -c)
-        if [ "$SIZE2" -gt 1000 ]; then
-          SCREENSHOT_DATA=$(echo -n "$RAW2" | base64 -w 0 2>/dev/null || echo "")
-          SCREENSHOT_SIZE=$SIZE2
-        fi
+    # --- Screenshot capture ---
+    # `adb exec-out screencap -p > file` streams a full frame in under a second.
+    # We must redirect to a file: capturing binary in $(...) lets bash drop NUL
+    # bytes and corrupts the PNG. mobilerun's `screencap -p <file>` path is not
+    # used because on a software-rendered emulator it takes 60-90s and can hang.
+    if timeout 20 adb exec-out screencap -p > /tmp/vexa_screen.png 2>/dev/null; then
+      SIZE=$(wc -c < /tmp/vexa_screen.png 2>/dev/null || echo 0)
+      # A real frame is a PNG of tens of KB; a 1x1 blank is ~67 bytes.
+      if [ "$SIZE" -gt 2000 ] && head -c 4 /tmp/vexa_screen.png | od -An -tx1 | grep -q "89 50 4e 47"; then
+        SCREENSHOT_DATA=$(base64 -w 0 /tmp/vexa_screen.png 2>/dev/null || echo "")
+        SCREENSHOT_SIZE=$SIZE
       fi
     fi
 
@@ -341,37 +322,24 @@ try:
 
     # --- Capture screenshot + UI hierarchy after action ---
     def capture_screenshot_and_ui():
-        import base64, hashlib
+        import base64, hashlib, subprocess, os, time
         screenshot_b64 = None
         checksum = None
         ui_hierarchy_b64 = None
 
-        # Screenshot — try screenrecord first (works headless), then screencap fallbacks
-        # Method 1: pull frame from screenrecord
+        # exec-out screencap -p redirected to a file: fast and uncorrupted.
+        # (mobilerun's screencap-to-file path can take 60-90s and hang.)
         try:
-            subprocess.run(["adb", "pull", "/sdcard/vexa_record.mp4", "/tmp/vexa_record.mp4"], capture_output=True, timeout=10000)
-            if os.path.exists("/tmp/vexa_record.mp4") and os.path.getsize("/tmp/vexa_record.mp4") > 1000:
-                result = subprocess.run(["ffmpeg", "-y", "-i", "/tmp/vexa_record.mp4", "-vframes", "1", "-f", "image2pipe", "-vcodec", "png", "-"], capture_output=True, timeout=15000)
-                if result.returncode == 0 and len(result.stdout) > 1000:
-                    return base64.b64encode(result.stdout).decode("ascii"), hashlib.md5(result.stdout).hexdigest(), None
-        except Exception:
-            pass
-
-        # Method 2: adb exec-out screencap -p
-        try:
-            result = subprocess.run(["adb", "exec-out", "screencap", "-p"], capture_output=True, timeout=20000)
-            if result.returncode == 0 and len(result.stdout) > 1000:
-                return base64.b64encode(result.stdout).decode("ascii"), hashlib.md5(result.stdout).hexdigest(), None
-        except Exception:
-            pass
-
-        # Method 3: screencap to /sdcard then pull
-        try:
-            subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/vexa_screen.png"], capture_output=True, timeout=10000)
-            time.sleep(0.3)
-            result2 = subprocess.run(["adb", "pull", "/sdcard/vexa_screen.png", "-"], capture_output=True, timeout=10000)
-            if result2.returncode == 0 and len(result2.stdout) > 1000:
-                return base64.b64encode(result2.stdout).decode("ascii"), hashlib.md5(result2.stdout).hexdigest(), None
+            with open("/tmp/vexa_action.png", "wb") as fh:
+                proc = subprocess.run(
+                    ["adb", "exec-out", "screencap", "-p"],
+                    stdout=fh, stderr=subprocess.DEVNULL, timeout=25,
+                )
+            if proc.returncode == 0 and os.path.getsize("/tmp/vexa_action.png") > 2000:
+                with open("/tmp/vexa_action.png", "rb") as fh:
+                    raw = fh.read()
+                if raw[:4] == b"\x89PNG":
+                    return base64.b64encode(raw).decode("ascii"), hashlib.md5(raw).hexdigest(), None
         except Exception:
             pass
 
@@ -454,7 +422,6 @@ kill $BRIDGE_PID 2>/dev/null || true
 kill $HEARTBEAT_PID 2>/dev/null || true
 kill $SCREENSHOT_PID 2>/dev/null || true
 kill $ACTION_PID 2>/dev/null || true
-kill $SCREENRECORD_PID 2>/dev/null || true
 # Unregister emulator
 curl -s -X DELETE "${CLOUDFLARE_WORKER_URL}/api/emulator/session" > /dev/null 2>&1 || true
 adb emu kill 2>/dev/null || true

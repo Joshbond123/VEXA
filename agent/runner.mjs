@@ -18,6 +18,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 const REPO_ROOT = process.cwd();
 const DATA_DIR = path.join(REPO_ROOT, 'data');
@@ -191,11 +192,50 @@ async function mobilerunGet(endpoint, timeoutMs = 10000) {
   }
 }
 
+/* Render the bridge's parsed UI elements as compact text for the model. The
+ * model needs concrete tap coordinates, so bounds are given in absolute device
+ * pixels. This is far more token-efficient (and less truncated) than the raw
+ * uiautomator XML dump it replaces. */
+function formatUiElements(elements, packageName) {
+  if (!Array.isArray(elements) || elements.length === 0) return null;
+  const lines = elements
+    .filter((e) => e && (e.text || e.content_description) && e.bounds)
+    .slice(0, 80)
+    .map((e) => {
+      const b = e.bounds;
+      const cx = Math.round((b.left + b.right) / 2);
+      const cy = Math.round((b.top + b.bottom) / 2);
+      const label = (e.text || e.content_description || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      return `- "${label}" tap(${cx},${cy}) bounds=[${b.left},${b.top},${b.right},${b.bottom}]${e.clickable ? ' clickable' : ''}`;
+    });
+  if (lines.length === 0) return null;
+  return `package=${packageName || 'unknown'} (${lines.length} labeled elements)\n${lines.join('\n')}`;
+}
+
 async function captureScreen(gatewayUrl) {
-  // Try mobilerun bridge first (for screenshot)
+  // Try the mobilerun bridge first. /device/state returns the screenshot and the
+  // parsed element list from the same moment, so the coordinates the model sees
+  // match the frame it is looking at.
   try {
-    const data = await mobilerunGet('/device/screenshot', 8000);
-    if (data.ok && data.screenshot_base64) return { screenshotB64: data.screenshot_base64, uiHierarchy: data.ui_hierarchy || null };
+    const data = await mobilerunGet('/device/state', 25000);
+    const shot = data.screenshot || {};
+    if (data.ok && shot.screenshot_base64) {
+      return {
+        screenshotB64: shot.screenshot_base64,
+        uiHierarchy: formatUiElements(data.elements, data.package),
+      };
+    }
+  } catch { /* fall through */ }
+  try {
+    const data = await mobilerunGet('/device/screenshot', 10000);
+    if (data.ok && data.screenshot_base64) {
+      let uiHierarchy = null;
+      try {
+        const ui = await mobilerunGet('/device/ui', 15000);
+        uiHierarchy = formatUiElements(ui.elements, ui.package);
+      } catch { /* UI tree unavailable */ }
+      return { screenshotB64: data.screenshot_base64, uiHierarchy };
+    }
   } catch { /* fall through to gateway */ }
   // Fall back to gateway screenshot + device-state endpoints
   const screenshotB64 = await captureScreenViaGateway(gatewayUrl);
@@ -221,7 +261,39 @@ async function deviceAction(gatewayUrl, action, params = {}) {
       // fall through to gateway
     }
   }
-  return gatewayRpc(gatewayUrl, action, params);
+  const result = await gatewayRpc(gatewayUrl, action, params);
+  // The emulator polls the relay every ~2s. Without waiting for it to pick the
+  // action up and report back, the very next capture reads the pre-action frame
+  // and every action looks like it did nothing.
+  await waitForActionCompletion(gatewayUrl);
+  return result;
+}
+
+/* Wait until the emulator has executed the queued action and reported a result.
+ * Resolves as soon as lastActionResult is no longer 'pending'; on timeout it
+ * resolves anyway so a slow frame never blocks the whole task. */
+async function waitForActionCompletion(gatewayUrl, timeoutMs = 15000) {
+  if (!gatewayUrl) return false;
+  const url = `${gatewayUrl.replace(/\/+$/, '')}/api/public/device-state`;
+  const deadline = Date.now() + timeoutMs;
+  let sawPending = false;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetchWithTimeout(url, { timeoutMs: 6000 });
+      if (res.ok) {
+        const state = await res.json();
+        const raw = state.lastActionResult;
+        if (raw === 'pending') {
+          sawPending = true;
+        } else if (sawPending || raw) {
+          // Action finished (success or failure) — the screen is now fresh.
+          return true;
+        }
+      }
+    } catch { /* transient; keep polling */ }
+    await sleep(500);
+  }
+  return false;
 }
 
 function mapActionToMobilerun(action, params) {
@@ -327,9 +399,11 @@ async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHie
     ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without screen change.\nTRY A DIFFERENT APPROACH:\n  • Use "launch" with package name (e.g. {"action":"launch","app":"com.android.vending"}) instead of tap\n  • Press "home" to reset to home screen, then try again\n  • Use "swipe" instead of "tap"\n  • Use "type" to search in the search bar\nDo NOT keep tapping the same coordinates.\n`
     : '';
 
-  // Build UI hierarchy text description for the agent
+  // Build UI element description for the agent. This is the parsed element list
+  // from the live device (text/content-desc with absolute tap coordinates), so
+  // the model can tap exact centres instead of guessing pixels from an image.
   const uiSection = uiHierarchy
-    ? `\n\nUI HIERARCHY (from uiautomator dump):\n${uiHierarchy.slice(0, 6000)}\n\nUse the UI hierarchy above to identify clickable elements, their text labels, and approximate coordinates. The hierarchy contains <node> elements with attributes like text, content-desc, clickable, bounds (in [x1,y1,x2,y2] format). Focus on buttons, text fields, and interactive elements relevant to your task.\n`
+    ? `\n\nCURRENT UI ELEMENTS (live accessibility tree, absolute device pixels):\n${uiHierarchy.slice(0, 6000)}\n\nEach line gives a visible label and the exact tap(x,y) centre for it. Prefer tapping these coordinates over estimating from the image. If the element you need is not listed, swipe to reveal more or use the screenshot.\n`
     : '';
 
   const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nCommon Android package names:\n  • Calculator: com.google.android.calculator\n  • Settings: com.android.settings\n  • Play Store: com.android.vending\n  • Chrome: com.android.chrome\n  • Camera: com.android.camera\n\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach — launch the app by package name, swipe, or press home first.\nFor Calculator Math Task: launch com.google.android.calculator, then tap number buttons and operation buttons.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
@@ -824,7 +898,13 @@ async function main() {
   console.log('Done.');
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Exported for unit tests; importing this module must not start the agent loop.
+export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum };
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
