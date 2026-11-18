@@ -3,8 +3,8 @@
  * Handles AI agent task management, execution, and provider integration
  */
 
-import { 
-  getAutomations, getAutomation, upsertAutomation, 
+import {
+  getAutomations, getAutomation, upsertAutomation,
   saveExecution, saveChatMessage, getChats,
   getSettings, upsertSettings,
 } from './database.js';
@@ -39,6 +39,7 @@ export async function handleAgent(request, env, ctx, token, corsHeaders) {
       }
 
       if (!automation) {
+        const now = new Date().toISOString();
         automation = {
           id: `auto_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           name: 'Agent Task',
@@ -48,11 +49,12 @@ export async function handleAgent(request, env, ctx, token, corsHeaders) {
           enabled: true,
           paused: false,
           status: 'queued',
-          nextRunAt: null,
-          lastRunAt: null,
+          nextRunAt: now,
+          lastRunAt: '',
+          lastRunStatus: '',
           runCount: 0,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: now,
+          updatedAt: now,
         };
         await upsertAutomation(env.DB, automation);
       }
@@ -222,7 +224,6 @@ async function dispatchAgentRunner(env, automationId) {
 async function getGitHubPat(env) {
   const settings = await getSettings(env.DB);
   if (settings?.github_pat_encrypted) {
-    // In production, this would be decrypted. For now, check KV or env.
     const stored = await env.CONFIG_KV.get('github_pat');
     if (stored) return stored;
     return env.GITHUB_PAT;

@@ -3,7 +3,7 @@
  * Serves data to the GitHub Pages frontend
  */
 
-import { 
+import {
   getAutomations, getAutomation, upsertAutomation,
   getChats, saveChatMessage,
   getEmulatorSession,
@@ -36,6 +36,7 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
   if (path === '/api/frontend/automations' && method === 'POST') {
     try {
       const body = await request.json();
+      const now = new Date().toISOString();
       const automation = {
         id: `auto_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         name: body.name || 'New Automation',
@@ -45,12 +46,12 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
         enabled: body.enabled !== false,
         paused: body.paused || false,
         status: body.status || 'queued',
-        nextRunAt: body.nextRunAt || null,
-        lastRunAt: null,
-        lastRunStatus: null,
+        nextRunAt: body.nextRunAt || now,
+        lastRunAt: '',
+        lastRunStatus: '',
         runCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: now,
+        updatedAt: now,
       };
       await upsertAutomation(env.DB, automation);
       return Response.json({ ok: true, automation }, { headers: corsHeaders() });

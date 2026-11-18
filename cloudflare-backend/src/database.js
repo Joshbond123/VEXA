@@ -3,6 +3,16 @@
  * D1 database schema for the VEXA platform
  */
 
+function snakeToCamel(obj) {
+  if (obj === null || obj === undefined) return obj;
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    result[camelKey] = value;
+  }
+  return result;
+}
+
 export async function initDatabase(db) {
   await db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, avatar_url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
   await db.exec(`CREATE TABLE IF NOT EXISTS settings (id TEXT PRIMARY KEY DEFAULT 'default', gateway_url TEXT, provider TEXT DEFAULT 'nvidia', model TEXT DEFAULT 'nemotron-3.5-super-vl-120b-a12b', api_key_encrypted TEXT, github_pat_encrypted TEXT, github_repo TEXT, cloudflare_account_id TEXT, cloudflare_api_token_encrypted TEXT, key_rotation INTEGER DEFAULT 1, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
@@ -22,11 +32,12 @@ export async function initDatabase(db) {
 
 export async function getAutomations(db) {
   const { results } = await db.prepare('SELECT * FROM automations ORDER BY created_at DESC').all();
-  return results;
+  return results.map(snakeToCamel);
 }
 
 export async function getAutomation(db, id) {
-  return await db.prepare('SELECT * FROM automations WHERE id = ?').bind(id).first();
+  const result = await db.prepare('SELECT * FROM automations WHERE id = ?').bind(id).first();
+  return result ? snakeToCamel(result) : null;
 }
 
 export async function upsertAutomation(db, automation) {
@@ -35,16 +46,16 @@ export async function upsertAutomation(db, automation) {
     await db.prepare(`UPDATE automations SET name = ?, instructions = ?, schedule_type = ?, interval_minutes = ?, enabled = ?, paused = ?, status = ?, next_run_at = ?, last_run_at = ?, last_run_status = ?, run_count = ?, updated_at = ? WHERE id = ?`).bind(
       automation.name,
       automation.instructions,
-      automation.schedule_type,
-      automation.interval_minutes,
+      automation.scheduleType,
+      automation.intervalMinutes,
       automation.enabled ? 1 : 0,
       automation.paused ? 1 : 0,
       automation.status,
-      automation.next_run_at,
-      automation.last_run_at,
-      automation.last_run_status,
-      automation.run_count,
-      automation.updated_at,
+      automation.nextRunAt,
+      automation.lastRunAt,
+      automation.lastRunStatus || '',
+      automation.runCount,
+      automation.updatedAt,
       automation.id
     ).run();
   } else {
@@ -52,17 +63,17 @@ export async function upsertAutomation(db, automation) {
       automation.id,
       automation.name,
       automation.instructions,
-      automation.schedule_type,
-      automation.interval_minutes,
+      automation.scheduleType,
+      automation.intervalMinutes,
       automation.enabled ? 1 : 0,
       automation.paused ? 1 : 0,
       automation.status,
-      automation.next_run_at,
-      automation.last_run_at,
-      automation.last_run_status,
-      automation.run_count,
-      automation.created_at,
-      automation.updated_at
+      automation.nextRunAt,
+      automation.lastRunAt,
+      automation.lastRunStatus || '',
+      automation.runCount,
+      automation.createdAt,
+      automation.updatedAt
     ).run();
   }
 }
@@ -100,11 +111,12 @@ export async function saveChatMessage(db, message) {
 
 export async function getChats(db, automationId, limit = 100) {
   const { results } = await db.prepare('SELECT * FROM chats WHERE automation_id = ? ORDER BY timestamp DESC LIMIT ?').bind(automationId, limit).all();
-  return results.reverse();
+  return results.map(snakeToCamel).reverse();
 }
 
 export async function getEmulatorSession(db) {
-  return await db.prepare('SELECT * FROM emulator_sessions ORDER BY updated_at DESC LIMIT 1').first();
+  const result = await db.prepare('SELECT * FROM emulator_sessions ORDER BY updated_at DESC LIMIT 1').first();
+  return result ? snakeToCamel(result) : null;
 }
 
 export async function upsertEmulatorSession(db, session) {
@@ -141,11 +153,11 @@ export async function upsertEmulatorSession(db, session) {
 }
 
 export async function getSettings(db) {
-  return await db.prepare('SELECT * FROM settings WHERE id = ?').bind('default').first();
+  const result = await db.prepare('SELECT * FROM settings WHERE id = ?').bind('default').first();
+  return result ? snakeToCamel(result) : null;
 }
 
 export async function upsertSettings(db, settings) {
-  // Debug: check for undefined values
   const bindValues = [
     'default',
     settings.gatewayUrl,
@@ -164,7 +176,7 @@ export async function upsertSettings(db, settings) {
       console.error(`upsertSettings: bind value ${i} is undefined`);
     }
   }
-  
+
   const existing = await db.prepare('SELECT id FROM settings WHERE id = ?').bind('default').first();
   if (existing) {
     await db.prepare(`UPDATE settings SET gateway_url = ?, provider = ?, model = ?, api_key_encrypted = ?, github_pat_encrypted = ?, github_repo = ?, cloudflare_account_id = ?, cloudflare_api_token_encrypted = ?, key_rotation = ?, updated_at = ? WHERE id = ?`).bind(
@@ -186,7 +198,8 @@ export async function upsertSettings(db, settings) {
 }
 
 export async function getDeviceState(db) {
-  return await db.prepare('SELECT * FROM device_state WHERE id = ?').bind('current').first();
+  const result = await db.prepare('SELECT * FROM device_state WHERE id = ?').bind('current').first();
+  return result ? snakeToCamel(result) : null;
 }
 
 export async function upsertDeviceState(db, state) {
