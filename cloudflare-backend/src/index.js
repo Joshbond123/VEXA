@@ -15,7 +15,7 @@ import { handleAgent } from './agent.js';
 import { handleFrontend } from './frontend.js';
 import { handleSettings } from './settings.js';
 import { EmulatorSession } from './durable-objects.js';
-import { initDatabase, getDeviceState } from './database.js';
+import { initDatabase, getDeviceState, upsertDeviceState } from './database.js';
 
 export { EmulatorSession };
 
@@ -57,16 +57,19 @@ function getBearerToken(request) {
  * Verify VEXA access token (from settings or env)
  */
 async function verifyAccessToken(token, env) {
-  // Check against stored tokens in KV or env
   const stored = await env.CONFIG_KV.get(`access_token:${token}`);
   if (stored) return JSON.parse(stored);
-
-  // Fallback to env var
   if (token === env.EMULATOR_ACCESS_TOKEN) {
     return { type: 'emulator', token };
   }
   return null;
 }
+
+// Blank 1x1 transparent PNG for when no screenshot is available
+const BLANK_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64'
+);
 
 export default {
   async fetch(request, env, ctx) {
@@ -106,28 +109,56 @@ export default {
         }, { headers: corsHeaders() });
       }
 
-      // GET /api/public/screenshot - get latest screenshot
+      // GET /api/public/screenshot - get latest screenshot (returns image data)
       if (path === '/api/public/screenshot' && method === 'GET') {
         try {
           const state = await getDeviceState(env.DB);
-          if (!state || !state.lastScreenshotUrl) {
-            return Response.json({ error: 'No screenshot available' }, { status: 404, headers: corsHeaders() });
+          if (state?.lastScreenshotUrl) {
+            try {
+              const imgRes = await fetch(state.lastScreenshotUrl);
+              if (imgRes.ok) {
+                const imgBuf = await imgRes.arrayBuffer();
+                return new Response(imgBuf, {
+                  headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
+                });
+              }
+            } catch { /* fall through to blank */ }
           }
-          return Response.json({
-            ok: true,
-            screenshotUrl: state.lastScreenshotUrl,
-          }, { headers: corsHeaders() });
+          // Return a blank 1x1 transparent PNG when no screenshot available
+          return new Response(BLANK_PNG, {
+            headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
+          });
         } catch (err) {
-          return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+          return new Response(BLANK_PNG, {
+            headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
+          });
         }
       }
 
       return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
     }
 
-    // POST /api/agent/action - agent runner RPC endpoint
+    // POST /api/agent/action - agent runner RPC endpoint (stores device action)
     if (path === '/api/agent/action' && method === 'POST') {
-      return handleEmulator(request, env, ctx, token, corsHeaders);
+      try {
+        const body = await request.json();
+        const { action, x, y, x2, y2, text, keycode, app, ms } = body;
+
+        const validActions = ['tap', 'swipe', 'scroll', 'type', 'key', 'back', 'home', 'launch', 'wait', 'screenshot'];
+        if (!validActions.includes(action)) {
+          return Response.json({ error: `Invalid action: ${action}` }, { status: 400, headers: corsHeaders() });
+        }
+
+        // Store the action in device state for the emulator to pick up
+        await upsertDeviceState(env.DB, {
+          lastAction: JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms }),
+          lastActionResult: 'pending',
+        });
+
+        return Response.json({ ok: true, action, queued: true }, { headers: corsHeaders() });
+      } catch (err) {
+        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+      }
     }
 
     // === Emulator Routes ===

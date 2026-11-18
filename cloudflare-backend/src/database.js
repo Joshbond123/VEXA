@@ -203,12 +203,24 @@ export async function getDeviceState(db) {
 }
 
 export async function upsertDeviceState(db, state) {
-  await db.prepare(`INSERT INTO device_state (id, screen_checksum, last_screenshot_url, last_action, last_action_result, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET screen_checksum = excluded.screen_checksum, last_screenshot_url = excluded.last_screenshot_url, last_action = excluded.last_action, last_action_result = excluded.last_action_result, updated_at = excluded.updated_at`).bind(
-    'current',
-    state.screenChecksum,
-    state.lastScreenshotUrl,
-    state.lastAction,
-    state.lastActionResult,
-    new Date().toISOString()
-  ).run();
+  const existing = await db.prepare('SELECT id FROM device_state WHERE id = ?').bind('current').first();
+  if (existing) {
+    await db.prepare(`UPDATE device_state SET screen_checksum = ?, last_screenshot_url = ?, last_action = ?, last_action_result = ?, updated_at = ? WHERE id = ?`).bind(
+      state.screenChecksum || null,
+      state.lastScreenshotUrl || null,
+      state.lastAction || null,
+      state.lastActionResult || null,
+      new Date().toISOString(),
+      'current'
+    ).run();
+  } else {
+    await db.prepare(`INSERT INTO device_state (id, screen_checksum, last_screenshot_url, last_action, last_action_result, updated_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(
+      'current',
+      state.screenChecksum || null,
+      state.lastScreenshotUrl || null,
+      state.lastAction || null,
+      state.lastActionResult || null,
+      new Date().toISOString()
+    ).run();
+  }
 }
