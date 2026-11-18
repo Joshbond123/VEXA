@@ -1,6 +1,13 @@
 /**
  * VEXA Emulator Management Module
  * Handles Android emulator registration, heartbeat, screen streaming, and device control
+ *
+ * Architecture: Cloudflare Worker acts as the bridge between the AI agent runner
+ * (GitHub Actions) and the Android emulator (separate GitHub Actions workflow).
+ *   - Agent runner sends actions → stored in D1 device_state
+ *   - Emulator polls for pending actions → executes via ADB → reports results
+ *   - Emulator uploads screenshots → stored in D1 device_state
+ *   - Agent runner reads screenshots → from D1 device_state
  */
 
 import { upsertEmulatorSession, getEmulatorSession, upsertDeviceState, getDeviceState } from './database.js';
@@ -10,7 +17,7 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   const path = url.pathname;
   const method = request.method;
 
-  // Verify emulator access token
+  // Verify emulator access token (required for emulator-originating requests)
   if (token) {
     const verified = await verifyAccessToken(token, env);
     if (!verified && path !== '/api/emulator/register') {
@@ -46,6 +53,14 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
 
       // Also cache in KV for fast access
       await env.SESSION_KV.put('emulator:default', JSON.stringify(session), { expirationTtl: 3600 });
+
+      // Initialize device state with no pending action and no screenshot
+      await upsertDeviceState(env.DB, {
+        screenChecksum: null,
+        lastScreenshotUrl: null,
+        lastAction: null,
+        lastActionResult: null,
+      });
 
       return Response.json({
         ok: true,
@@ -117,7 +132,7 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
     }, { headers: corsHeaders() });
   }
 
-  // POST /api/emulator/action - send device control action
+  // POST /api/emulator/action - send device control action (from AI agent)
   if (path === '/api/emulator/action' && method === 'POST') {
     try {
       const body = await request.json();
@@ -130,39 +145,56 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
       }
 
       // Store the action in device state for the emulator to pick up
+      const actionPayload = JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms });
       await upsertDeviceState(env.DB, {
-        lastAction: JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms }),
+        screenChecksum: null,
+        lastScreenshotUrl: null,
+        lastAction: actionPayload,
         lastActionResult: 'pending',
       });
 
-      // Notify Durable Object about the action
-      const id = env.EmulatorSession.idFromName('main');
-      const stub = env.EmulatorSession.get(id);
-      
-      try {
-        const result = await stub.fetch('https://vexa.internal/api/session/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms }),
-        });
-        const resultData = await result.json();
-        
-        await upsertDeviceState(env.DB, {
-          lastAction: JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms }),
-          lastActionResult: JSON.stringify(resultData),
-        });
-
-        return Response.json({ ok: true, action, result: resultData }, { headers: corsHeaders() });
-      } catch (doErr) {
-        // Durable Object may not be available, still return ok
-        return Response.json({ ok: true, action, queued: true }, { headers: corsHeaders() });
-      }
+      return Response.json({ ok: true, action, queued: true }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
     }
   }
 
-  // GET /api/emulator/screenshot - get latest screenshot
+  // GET /api/emulator/pending-action - emulator polls for the next action to execute
+  if (path === '/api/emulator/pending-action' && method === 'GET') {
+    try {
+      const state = await getDeviceState(env.DB);
+      if (!state || !state.last_action || state.last_action_result !== 'pending') {
+        return Response.json({ ok: true, action: null }, { headers: corsHeaders() });
+      }
+
+      const action = JSON.parse(state.last_action);
+      return Response.json({ ok: true, action }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  // POST /api/emulator/action-result - emulator reports action execution result
+  if (path === '/api/emulator/action-result' && method === 'POST') {
+    try {
+      const body = await request.json();
+      const { action, success, error, screenshotBase64, checksum } = body;
+
+      // Clear the pending action and record the result
+      await upsertDeviceState(env.DB, {
+        screenChecksum: checksum || null,
+        lastScreenshotUrl: screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null,
+        lastAction: null,
+        lastActionResult: JSON.stringify({ action, success, error, timestamp: new Date().toISOString() }),
+      });
+
+      return Response.json({ ok: true, message: 'Action result recorded' }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  // GET /api/emulator/screenshot - get latest screenshot (JSON with URL)
   if (path === '/api/emulator/screenshot' && method === 'GET') {
     const state = await getDeviceState(env.DB);
     if (!state || !state.last_screenshot_url) {
@@ -171,29 +203,17 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
     return Response.json({ ok: true, screenshotUrl: state.last_screenshot_url }, { headers: corsHeaders() });
   }
 
-  // POST /api/emulator/screenshot - upload screenshot
+  // POST /api/emulator/screenshot - upload screenshot from emulator
   if (path === '/api/emulator/screenshot' && method === 'POST') {
     try {
       const body = await request.json();
       const { screenshotBase64, checksum, url: screenshotUrl } = body;
 
       await upsertDeviceState(env.DB, {
-        screenChecksum: checksum,
-        lastScreenshotUrl: screenshotUrl,
+        screenChecksum: checksum || null,
+        lastScreenshotUrl: screenshotUrl || (screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null),
         updatedAt: new Date().toISOString(),
       });
-
-      // Store in R2 if available
-      if (env.SCREENSHOTS_BUCKET && screenshotBase64) {
-        try {
-          const key = `screenshots/${Date.now()}.png`;
-          await env.SCREENSHOTS_BUCKET.put(key, screenshotBase64, {
-            httpMetadata: { contentType: 'image/png' },
-          });
-        } catch (r2Err) {
-          // R2 not configured, continue without it
-        }
-      }
 
       return Response.json({ ok: true, message: 'Screenshot saved' }, { headers: corsHeaders() });
     } catch (err) {
@@ -219,4 +239,4 @@ async function verifyAccessToken(token, env) {
     return { type: 'emulator', token };
   }
   return null;
-}
+}
