@@ -9,7 +9,7 @@
  * Run: node tests/test_runner_helpers.mjs
  */
 import assert from 'node:assert/strict';
-import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction } from '../agent/runner.mjs';
+import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText } from '../agent/runner.mjs';
 
 let passed = 0;
 function test(name, fn) {
@@ -126,6 +126,29 @@ test('normalizeDecisionAction rejects coordinate-like launch args', () => {
 test('normalizeDecisionAction leaves a clean action untouched', () => {
   const d = normalizeDecisionAction({ action: 'home' }, 'x');
   assert.equal(d.action, 'home');
+});
+
+test('uiHierarchyToText parses a base64 uiautomator dump into tap targets', () => {
+  // Regression: the gateway stores the raw dump base64-encoded, and the runner
+  // handed it to the model verbatim, so the model had no coordinates.
+  const xml = '<?xml version="1.0"?><hierarchy rotation="0">'
+    + '<node index="0" text="Calculator" resource-id="" class="android.widget.TextView" package="com.android.calculator2" content-desc="" clickable="true" bounds="[100,200][300,400]"/>'
+    + '<node index="1" text="7" class="android.widget.Button" package="com.android.calculator2" content-desc="" clickable="true" bounds="[10,20][110,120]"/>'
+    + '</hierarchy>';
+  const out = uiHierarchyToText(Buffer.from(xml).toString('base64'));
+  assert.match(out, /package=com\.android\.calculator2/);
+  assert.match(out, /"Calculator" tap\(200,300\)/);
+  assert.match(out, /"7" tap\(60,70\)/);
+});
+
+test('uiHierarchyToText passes through already-formatted bridge text', () => {
+  const text = 'package=com.android.settings (1 labeled elements)\n- "Battery" tap(255,1420) bounds=[0,0,100,100] clickable';
+  assert.equal(uiHierarchyToText(text), text);
+});
+
+test('uiHierarchyToText returns null for junk input', () => {
+  assert.equal(uiHierarchyToText(null), null);
+  assert.equal(uiHierarchyToText('DUMPSYS_WINDOWS:whatever'), null);
 });
 
 console.log(`\n${passed} passed, 0 failed`);

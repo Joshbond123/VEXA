@@ -282,6 +282,58 @@ function formatUiElements(elements, packageName) {
   return `package=${packageName || 'unknown'} (${lines.length} labeled elements)\n${lines.join('\n')}`;
 }
 
+/**
+ * Parse a uiautomator XML dump into the element shape formatUiElements wants.
+ * The gateway stores the raw dump (base64), so without this the model was fed
+ * base64 gibberish instead of labels with tap coordinates and had to guess
+ * pixels from the screenshot — which is why it kept tapping dead spots.
+ */
+function parseUiXml(xml, packageName) {
+  if (!xml || typeof xml !== 'string') return null;
+  const elements = [];
+  const nodeRe = /<node\b[^>]*>/g;
+  let m;
+  while ((m = nodeRe.exec(xml))) {
+    const tag = m[0];
+    const attr = (name) => {
+      const a = tag.match(new RegExp(`${name}="([^"]*)"`));
+      return a ? a[1] : '';
+    };
+    const boundsRaw = attr('bounds');
+    const b = boundsRaw.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+    if (!b) continue;
+    const text = attr('text');
+    const desc = attr('content-desc');
+    if (!text && !desc) continue;
+    elements.push({
+      text,
+      content_description: desc,
+      clickable: attr('clickable') === 'true',
+      bounds: { left: +b[1], top: +b[2], right: +b[3], bottom: +b[4] },
+    });
+  }
+  return formatUiElements(elements, packageName);
+}
+
+/**
+ * Turn whatever the gateway stored as uiHierarchy into the model-facing element
+ * list. The stored value is base64-encoded uiautomator XML; a value that is
+ * already formatted text (from the bridge) is returned unchanged.
+ */
+function uiHierarchyToText(stored) {
+  if (!stored || typeof stored !== 'string') return null;
+  // Already model-facing text from the bridge (or a previous format pass).
+  if (stored.includes('tap(') || stored.startsWith('package=')) return stored.length > 4000 ? stored.slice(0, 4000) : stored;
+  let raw = stored;
+  if (!stored.includes('<')) {
+    try { raw = Buffer.from(stored, 'base64').toString('utf8'); } catch { return null; }
+  }
+  if (!raw || raw.startsWith('DUMPSYS_WINDOWS:')) return null;
+  const pkg = (raw.match(/package="([^"]+)"/) || [])[1] || 'unknown';
+  if (raw.includes('<node')) return parseUiXml(raw, pkg);
+  return null;
+}
+
 async function captureScreen(gatewayUrl) {
   // Try the mobilerun bridge first. /device/state returns the screenshot and the
   // parsed element list from the same moment, so the coordinates the model sees
@@ -314,7 +366,7 @@ async function captureScreen(gatewayUrl) {
     const res = await fetchWithTimeout(`${gatewayUrl.replace(/\/$/, '')}/api/public/device-state`, { timeoutMs: 8000 });
     if (res.ok) {
       const state = await res.json();
-      uiHierarchy = state.uiHierarchy || null;
+      uiHierarchy = uiHierarchyToText(state.uiHierarchy);
     }
   } catch { /* UI hierarchy unavailable */ }
   return { screenshotB64, uiHierarchy };
@@ -952,7 +1004,7 @@ async function main() {
 }
 
 // Exported for unit tests; importing this module must not start the agent loop.
-export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction };
+export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseUiXml };
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
