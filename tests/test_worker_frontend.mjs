@@ -285,6 +285,70 @@ await test('a device action in a chat reply is queued when the device is online'
   }
 });
 
+await test('chat attaches the live screenshot so the model can actually see the screen', async () => {
+  // Regression: the chat handler claimed a screenshot was attached but sent
+  // text only, so the vision model invented the screen contents.
+  const realFetch = globalThis.fetch;
+  let sentBody = null;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    return Response.json({ choices: [{ message: { content: 'I can see the Battery settings page.' } }] });
+  };
+  try {
+    const db = createDb();
+    db.tables.device_state = {
+      id: 'current',
+      last_screenshot_url: 'data:image/png;base64,QUJD',
+      ui_hierarchy: Buffer.from('<node text="Battery" bounds="[0,0][100,100]"/>').toString('base64'),
+    };
+    const env = {
+      CONFIG_KV: createKv({ settings_config: JSON.stringify({ provider: 'nvidia', apiKeyEncrypted: 'nvapi-x' }) }),
+      SESSION_KV: createKv({
+        'emulator:default': JSON.stringify({ id: 'default', status: 'online', lastHeartbeat: new Date().toISOString() }),
+      }),
+      DB: db,
+    };
+    const res = await handleFrontend(
+      req('/api/frontend/chat', 'POST', { message: 'what is on screen?' }),
+      env, {}, null, corsHeaders,
+    );
+    await res.json();
+    const userMsg = sentBody.messages[sentBody.messages.length - 1];
+    assert.ok(Array.isArray(userMsg.content), 'the user turn must be multimodal when a frame exists');
+    const image = userMsg.content.find((c) => c.type === 'image_url');
+    assert.ok(image, 'the live frame must be attached as an image_url');
+    assert.equal(image.image_url.url, 'data:image/png;base64,QUJD');
+    assert.match(sentBody.messages[0].content, /Battery/, 'the UI tree text must reach the model');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await test('chat omits the image when the device is offline', async () => {
+  const realFetch = globalThis.fetch;
+  let sentBody = null;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    return Response.json({ choices: [{ message: { content: 'The device is offline.' } }] });
+  };
+  try {
+    const db = createDb();
+    db.tables.device_state = { id: 'current', last_screenshot_url: 'data:image/png;base64,QUJD' };
+    const env = {
+      CONFIG_KV: createKv({ settings_config: JSON.stringify({ provider: 'nvidia', apiKeyEncrypted: 'nvapi-x' }) }),
+      SESSION_KV: createKv(), DB: db,
+    };
+    await handleFrontend(
+      req('/api/frontend/chat', 'POST', { message: 'what is on screen?' }),
+      env, {}, null, corsHeaders,
+    );
+    const userMsg = sentBody.messages[sentBody.messages.length - 1];
+    assert.equal(typeof userMsg.content, 'string', 'an offline device must not attach a stale frame');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 await test('reasoning models are accepted when content is empty', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => Response.json({

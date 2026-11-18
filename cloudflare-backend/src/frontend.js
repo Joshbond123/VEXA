@@ -308,10 +308,33 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
       const state = await getDeviceState(env.DB);
       const online = !!session && session.status === 'online'
         && (Date.now() - new Date(session.lastHeartbeat || 0).getTime()) < 5 * 60 * 1000;
-      const hasFrame = !!state?.lastScreenshotUrl;
+      const frameDataUrl = state?.lastScreenshotUrl || '';
+      const hasFrame = !!frameDataUrl;
+
+      // Attach the live frame to the vision model. Without this the model only
+      // had text, so it invented what was on screen (it once described the home
+      // screen while the device was on a Settings page). NVIDIA's API rejects
+      // very large bodies, so an oversized frame falls back to the UI tree.
+      const canAttach = online
+        && /^data:image\/(png|jpe?g|webp);base64,/.test(frameDataUrl)
+        && frameDataUrl.length < 6_000_000;
+
+      // The UI tree gives the model element names and bounds it can ground on.
+      let uiText = '';
+      if (online && state?.uiHierarchy) {
+        try {
+          const raw = atob(state.uiHierarchy);
+          if (!raw.startsWith('DUMPSYS_WINDOWS:')) {
+            const labels = [...raw.matchAll(/text="([^"]+)"/g)]
+              .map((m) => m[1].trim())
+              .filter(Boolean);
+            if (labels.length) uiText = `\nOn-screen text (from the accessibility tree): ${labels.slice(0, 60).join(' | ')}`;
+          }
+        } catch { /* not base64; ignore */ }
+      }
 
       const deviceContext = online
-        ? `The Android device is ONLINE (${session.deviceModel || 'Android'} ${session.androidVersion || ''}, ${session.resolution || '1080x2400'}). ${hasFrame ? 'A live screenshot of its current screen is attached.' : 'No screenshot is available yet.'}`
+        ? `The Android device is ONLINE (${session.deviceModel || 'Android'} ${session.androidVersion || ''}, ${session.resolution || '1080x2400'}).${canAttach ? ' A live screenshot of its current screen is attached — describe only what you can actually see in it.' : hasFrame ? ' A screenshot exists but could not be attached; rely on the on-screen text below.' : ' No screenshot is available yet.'}${uiText}`
         : 'The Android device is currently OFFLINE. You can still answer questions, but you cannot observe or control the phone right now.';
 
       const messages = [
@@ -330,7 +353,17 @@ Only include the ACTION line when you are actually taking a step on the device. 
           if (h && h.role && h.content) messages.push({ role: h.role === 'agent' ? 'assistant' : 'user', content: String(h.content).slice(0, 2000) });
         }
       }
-      messages.push({ role: 'user', content: message });
+      if (canAttach) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: message },
+            { type: 'image_url', image_url: { url: frameDataUrl } },
+          ],
+        });
+      } else {
+        messages.push({ role: 'user', content: message });
+      }
 
       const ai = await askAi(env, { messages });
       if (!ai.ok) {
