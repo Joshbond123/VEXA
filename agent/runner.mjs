@@ -194,14 +194,26 @@ function verifyClaim(uiHierarchy, summary) {
 }
 
 /* ------------------------------------------------------------------ gateway / device */
-async function getGatewayStatus(gatewayUrl) {
+async function getGatewayStatus(gatewayUrl, attempts = 4) {
   if (!gatewayUrl) return { online: false, reason: 'No gatewayUrl configured in data/emulator.json' };
-  try {
-    const res = await fetchWithTimeout(`${gatewayUrl.replace(/\/+$/, '')}/api/public/health`, { timeoutMs: 8000 });
-    if (!res.ok) return { online: false, reason: `HTTP ${res.status}` };
-    const data = await res.json();
-    return { online: true, data };
-  } catch (err) { return { online: false, reason: err.message }; }
+  const healthUrl = `${gatewayUrl.replace(/\/+$/, '')}/api/public/health`;
+  let reason = 'unknown';
+  // A single slow or dropped request must not abort a whole run: the emulator
+  // was often live while one health fetch timed out and the agent gave up with
+  // "gateway is offline" and zero actions taken. Retry with backoff instead.
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetchWithTimeout(healthUrl, { timeoutMs: 8000 });
+      if (!res.ok) { reason = `HTTP ${res.status}`; }
+      else {
+        const data = await res.json().catch(() => ({}));
+        if (data.ok !== false) return { online: true, data };
+        reason = 'health reported not ok';
+      }
+    } catch (err) { reason = err.message; }
+    if (i < attempts - 1) await sleep(1500 * (i + 1));
+  }
+  return { online: false, reason };
 }
 
 async function gatewayRpc(gatewayUrl, action, params = {}) {
