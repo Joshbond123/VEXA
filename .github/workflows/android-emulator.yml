@@ -28,13 +28,11 @@ jobs:
       EMULATOR_ACCESS_TOKEN: ${{ secrets.EMULATOR_ACCESS_TOKEN }}
       EMULATOR_GATEWAY_SECRET: ${{ secrets.EMULATOR_GATEWAY_SECRET }}
       ROTATION_MINUTES: ${{ inputs.rotation_minutes || '240' }}
-      # Persistence (whole-AVD via GitHub Releases, VIBELY architecture)
       EMULATOR_STATE_KEY: ${{ secrets.EMULATOR_STATE_KEY }}
       GH_PAT: ${{ secrets.GH_PAT }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       ANDROID_STATE_BRANCH: android-state-v1
-      AVD_NAME: vexa_pixel_7_api34
-      # Cloudflare Worker gateway (permanent endpoint)
+      AVD_NAME: vexa_pixel_7_api30
       CLOUDFLARE_WORKER_URL: https://vexa-ai-agent.replyraven001.workers.dev
 
     steps:
@@ -60,7 +58,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg openjdk-17-jdk wget unzip curl
-          echo "ffmpeg openjdk-17-jdk installed"
+          echo "Dependencies installed"
           java -version 2>&1 | head -1
 
       - name: Install Android SDK Command-line Tools
@@ -74,23 +72,23 @@ jobs:
           echo "Android SDK cmdline-tools installed"
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version
 
-      - name: Install Android SDK Platform & System Image
+      - name: Install Android SDK Platform & System Image (google_apis, lighter download)
         run: |
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "emulator" "platforms;android-34" "system-images;android-34;google_apis_playstore;x86_64" "build-tools;34.0.0"
+          sdkmanager "platform-tools" "emulator" "platforms;android-30" "system-images;android-30;google_apis;x86_64" "build-tools;30.0.3"
           echo "SDK components installed"
 
-      - name: Create AVD (Pixel 7, Android 14, Play Store)
+      - name: Create AVD (Pixel 7, Android 30, google_apis)
         run: |
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
-          echo "no" | avdmanager create avd -n vexa_pixel_7_api34 \
-            -k "system-images;android-34;google_apis_playstore;x86_64" \
+          echo "no" | avdmanager create avd -n vexa_pixel_7_api30 \
+            -k "system-images;android-30;google_apis;x86_64" \
             -g google_apis \
             -b x86_64 \
             -d "pixel_7" \
             --force
-          echo "AVD created: vexa_pixel_7_api34"
+          echo "AVD created: vexa_pixel_7_api30"
 
       - name: Install gateway dependencies
         run: |
@@ -103,7 +101,7 @@ jobs:
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           GITHUB_REPOSITORY=Joshbond123/VIBELY bash "$PWD/android-emulator/restore-whole-avd.sh" || true
         env:
-          AVD_NAME: vexa_pixel_7_api34
+          AVD_NAME: vexa_pixel_7_api30
           ANDROID_STATE_BRANCH: android-state-v1
 
       - name: Start Android Emulator (headless, no-window)
@@ -111,14 +109,13 @@ jobs:
           export ANDROID_HOME=$HOME/Android/Sdk
           export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH
           export ANDROID_AVD_HOME=$HOME/.android/avd
-          export AVD_NAME=vexa_pixel_7_api34
+          export AVD_NAME=vexa_pixel_7_api30
 
           echo "Starting emulator with -no-window -gpu swiftshader_indirect..."
           nohup emulator -avd "$AVD_NAME" \
             -no-window -gpu swiftshader_indirect \
             -noaudio -no-boot-anim -no-snapshot-save \
-            -wipe-data \
-            -qemu -enable-kvm -m 4096 \
+            -qemu -enable-kvm -m 2048 \
             > /tmp/emulator.log 2>&1 &
           EMULATOR_PID=$!
           echo "Emulator PID: $EMULATOR_PID"
