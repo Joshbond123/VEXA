@@ -39,11 +39,12 @@
     "intervalMinutes": 60,
     "enabled": true,
     "paused": false,
-    "status": "queued",
+    "status": "failed",
     "nextRunAt": null,
-    "lastRunAt": null,
-    "runCount": 0,
+    "lastRunAt": "2026-11-18T00:06:55.398Z",
+    "runCount": 1,
     "createdAt": "2026-11-18T00:00:00.000Z",
-    "updatedAt": "2026-11-18T00:00:00.000Z"
+    "updatedAt": "2026-11-18T00:06:55.398Z",
+    "lastRunStatus": "failed"
   }
 ]

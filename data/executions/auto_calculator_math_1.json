@@ -1,0 +1,18 @@
+[
+  {
+    "id": "exec_1794960415340_i1fgm",
+    "automationId": "auto_calculator_math_1",
+    "status": "failed",
+    "startedAt": "2026-11-18T00:06:55.339Z",
+    "finishedAt": "2026-11-18T00:06:55.398Z",
+    "taskReceived": "Open the Calculator app on the Android device, compute 127 multiplied by 83, take a screenshot of the result, and report the exact number shown on screen.",
+    "actionsPerformed": [],
+    "appsInteracted": [],
+    "observedResults": "Could not connect to running Android emulator.",
+    "outcomeAchieved": false,
+    "failures": "Android emulator gateway is offline (fetch failed). Start the Android Emulator workflow first.",
+    "checkpoints": [],
+    "nextExecutionScheduled": null,
+    "resuming": false
+  }
+]
