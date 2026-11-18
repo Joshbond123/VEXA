@@ -489,9 +489,9 @@ async function runAutomation(automation, emulator) {
             const parsedAction = actionMatch[1];
             const parsedArgs = actionMatch[2];
             // Only override if the current action doesn't already have proper x/y
-            const textIsEmpty = !decision.text || decision.text === 'undefined' || decision.text === 'undefined,undefined';
-            const appIsEmpty = !decision.app || decision.app === 'undefined' || decision.app === 'undefined,undefined';
-            if (!decision.x && !decision.y && textIsEmpty && appIsEmpty) {
+            // Normalize malformed action strings like "launch(undefined,undefined)"
+            // regardless of what's in text/app fields — they'll be overwritten
+            if (!decision.x && !decision.y) {
               if (parsedAction === 'tap' || parsedAction === 'swipe') {
                 const coords = parsedArgs.split(',').map(c => Number(c.trim()));
                 if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
