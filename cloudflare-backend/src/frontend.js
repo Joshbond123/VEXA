@@ -159,7 +159,8 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
         gatewayUrl: body.gatewayUrl || '',
         provider: body.provider || 'nvidia',
         model: body.model || 'nemotron-3.5-super-vl-120b-a12b',
-        apiKeyEncrypted: body.apiKey || '',
+        // The frontend posts `apiKeys` (one per line); older clients used `apiKey`.
+        apiKeyEncrypted: body.apiKeys || body.apiKey || '',
         githubPatEncrypted: body.githubPat || '',
         githubRepo: body.githubRepo || '',
         cloudflareAccountId: body.cloudflareAccountId || '',

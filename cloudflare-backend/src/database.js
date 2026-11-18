@@ -205,25 +205,41 @@ export async function getDeviceState(db) {
 }
 
 export async function upsertDeviceState(db, state) {
-  const existing = await db.prepare('SELECT id FROM device_state WHERE id = ?').bind('current').first();
+  // Partial update: only the fields actually present in `state` are written.
+  // The previous implementation wrote every column on every call, so queueing an
+  // action (which passes only lastAction/lastActionResult) blanked the screenshot
+  // and UI hierarchy, and uploading a screenshot blanked the pending action. The
+  // agent therefore never saw a frame and the emulator never saw an action.
+  const existing = await db.prepare('SELECT * FROM device_state WHERE id = ?').bind('current').first();
+  const has = (key) => Object.prototype.hasOwnProperty.call(state, key);
+  const current = existing ? snakeToCamel(existing) : {};
+
+  const merged = {
+    screenChecksum: has('screenChecksum') ? state.screenChecksum : (current.screenChecksum ?? null),
+    lastScreenshotUrl: has('lastScreenshotUrl') ? state.lastScreenshotUrl : (current.lastScreenshotUrl ?? null),
+    lastAction: has('lastAction') ? state.lastAction : (current.lastAction ?? null),
+    lastActionResult: has('lastActionResult') ? state.lastActionResult : (current.lastActionResult ?? null),
+    uiHierarchy: has('uiHierarchy') ? state.uiHierarchy : (current.uiHierarchy ?? null),
+  };
+
   if (existing) {
     await db.prepare(`UPDATE device_state SET screen_checksum = ?, last_screenshot_url = ?, last_action = ?, last_action_result = ?, ui_hierarchy = ?, updated_at = ? WHERE id = ?`).bind(
-      state.screenChecksum || null,
-      state.lastScreenshotUrl || null,
-      state.lastAction || null,
-      state.lastActionResult || null,
-      state.uiHierarchy || null,
+      merged.screenChecksum,
+      merged.lastScreenshotUrl,
+      merged.lastAction,
+      merged.lastActionResult,
+      merged.uiHierarchy,
       new Date().toISOString(),
       'current'
     ).run();
   } else {
     await db.prepare(`INSERT INTO device_state (id, screen_checksum, last_screenshot_url, last_action, last_action_result, ui_hierarchy, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
       'current',
-      state.screenChecksum || null,
-      state.lastScreenshotUrl || null,
-      state.lastAction || null,
-      state.lastActionResult || null,
-      state.uiHierarchy || null,
+      merged.screenChecksum,
+      merged.lastScreenshotUrl,
+      merged.lastAction,
+      merged.lastActionResult,
+      merged.uiHierarchy,
       new Date().toISOString()
     ).run();
   }
