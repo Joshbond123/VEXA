@@ -434,7 +434,9 @@ async function runAutomation(automation, emulator) {
         const deviceState = await inspectDeviceState(emulator.gatewayUrl);
 
         const uiChanged = uiHierarchy !== null && uiHierarchy !== lastUiHierarchy;
-        const screenStuck = lastScreenChecksum !== null && screenChecksumVal === lastScreenChecksum && !uiChanged;
+        const screenshotUninformative = !screenshotB64 || screenshotB64.length < 1000;
+        const uiHierarchyUnavailable = uiHierarchy === null;
+        const screenStuck = lastScreenChecksum !== null && screenChecksumVal === lastScreenChecksum && !uiChanged && !screenshotUninformative;
         if (screenStuck) {
           stepsWithoutProgress++;
         } else {
@@ -582,6 +584,16 @@ async function runAutomation(automation, emulator) {
             }
 
             const uiChanged = postUiHierarchy && postUiHierarchy !== uiHierarchy;
+            const screenshotUninformative = !screenshotB64 || screenshotB64.length < 1000;
+            const uiHierarchyUnavailable = !postUiHierarchy;
+
+            // When screenshots are 1x1 placeholders and UI hierarchy is unavailable,
+            // we cannot verify screen changes. Proceed assuming the action executed.
+            if (screenshotUninformative && uiHierarchyUnavailable) {
+              screenChanged = true;
+              break;
+            }
+
             if (screensDiffer(screenshotB64, postScreenshot) || uiChanged) {
               screenChanged = true;
               break;
