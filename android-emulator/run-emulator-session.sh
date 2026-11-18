@@ -166,52 +166,62 @@ SCREENSHOT_PID=""
     UI_HIERARCHY=""
 
     # --- Screenshot capture ---
-    # `adb exec-out screencap -p > file` streams a full frame in under a second.
-    # We must redirect to a file: capturing binary in $(...) lets bash drop NUL
-    # bytes and corrupts the PNG. mobilerun's `screencap -p <file>` path is not
-    # used because on a software-rendered emulator it takes 60-90s and can hang.
-    if timeout 20 adb exec-out screencap -p > /tmp/vexa_screen.png 2>/dev/null; then
-      SIZE=$(wc -c < /tmp/vexa_screen.png 2>/dev/null || echo 0)
-      # A real frame is a PNG of tens of KB; a 1x1 blank is ~67 bytes.
-      if [ "$SIZE" -gt 2000 ] && head -c 4 /tmp/vexa_screen.png | od -An -tx1 | grep -q "89 50 4e 47"; then
-        SCREENSHOT_DATA=$(base64 -w 0 /tmp/vexa_screen.png 2>/dev/null || echo "")
-        SCREENSHOT_SIZE=$SIZE
-      fi
+    # `adb exec-out screencap -p > file` streams a full frame. On a
+    # software-rendered emulator the first frames can take well over 20s, so
+    # allow 45s and fall back to capturing to a device file and pulling it.
+    if timeout 45 adb exec-out screencap -p > /tmp/vexa_screen.png 2>/dev/null; then
+      :
+    else
+      timeout 45 adb shell screencap -p /sdcard/vexa_screen.png >/dev/null 2>&1 || true
+      adb pull /sdcard/vexa_screen.png /tmp/vexa_screen.png >/dev/null 2>&1 || true
+    fi
+    SIZE=$(wc -c < /tmp/vexa_screen.png 2>/dev/null || echo 0)
+    # A real frame is a PNG of tens of KB; a 1x1 blank is ~67 bytes.
+    if [ "$SIZE" -gt 2000 ] && head -c 4 /tmp/vexa_screen.png | od -An -tx1 | grep -q "89 50 4e 47"; then
+      base64 -w 0 /tmp/vexa_screen.png > /tmp/vexa_screen.b64 2>/dev/null || : > /tmp/vexa_screen.b64
+      SCREENSHOT_SIZE=$SIZE
+    else
+      : > /tmp/vexa_screen.b64
     fi
 
     # --- UI hierarchy capture via uiautomator dump ---
+    : > /tmp/vexa_ui.b64
     adb shell uiautomator dump /sdcard/vexa_ui.xml 2>/dev/null || true
     sleep 0.2
     adb pull /sdcard/vexa_ui.xml /tmp/vexa_ui.xml 2>/dev/null || true
     if [ -f /tmp/vexa_ui.xml ]; then
       UI_SIZE=$(wc -c < /tmp/vexa_ui.xml 2>/dev/null || echo "0")
       if [ "$UI_SIZE" -gt 100 ]; then
-        UI_HIERARCHY=$(base64 -w 0 /tmp/vexa_ui.xml 2>/dev/null || echo "")
+        base64 -w 0 /tmp/vexa_ui.xml > /tmp/vexa_ui.b64 2>/dev/null || true
       fi
     fi
     # Fallback: dumpsys window windows
-    if [ -z "$UI_HIERARCHY" ]; then
-      DUMPSYS_DATA=$(adb shell dumpsys window windows 2>/dev/null | head -100 || echo "")
-      if [ -n "$DUMPSYS_DATA" ] && [ $(echo -n "$DUMPSYS_DATA" | wc -c) -gt 100 ]; then
-        UI_HIERARCHY=$(echo -n "DUMPSYS_WINDOWS:$DUMPSYS_DATA" | base64 -w 0 2>/dev/null || echo "")
+    if [ ! -s /tmp/vexa_ui.b64 ]; then
+      adb shell dumpsys window windows 2>/dev/null | head -100 > /tmp/vexa_dumpsys.txt || true
+      if [ "$(wc -c < /tmp/vexa_dumpsys.txt 2>/dev/null || echo 0)" -gt 100 ]; then
+        { echo -n "DUMPSYS_WINDOWS:"; cat /tmp/vexa_dumpsys.txt; } | base64 -w 0 > /tmp/vexa_ui.b64 2>/dev/null || true
       fi
     fi
 
-    # Upload screenshot + UI hierarchy to Cloudflare Worker
-    if [ -n "$SCREENSHOT_DATA" ] || [ -n "$UI_HIERARCHY" ]; then
-      CHECKSUM=$(echo -n "$SCREENSHOT_DATA" | md5sum | cut -d' ' -f1)
-      curl -s -X POST "${CLOUDFLARE_WORKER_URL}/api/emulator/screenshot" \
+    # Upload screenshot + UI hierarchy to Cloudflare Worker.
+    # The base64 payload is far too large for a shell argument (ARG_MAX), so
+    # assemble the JSON body with files and stream it with --data-binary @file.
+    if [ -s /tmp/vexa_screen.b64 ] || [ -s /tmp/vexa_ui.b64 ]; then
+      CHECKSUM=$(md5sum /tmp/vexa_screen.b64 | cut -d' ' -f1)
+      python3 - /tmp/vexa_screen.b64 /tmp/vexa_ui.b64 "$CHECKSUM" > /tmp/vexa_upload.json << 'PYJSON'
+import json, sys
+screenshot = open(sys.argv[1]).read().strip()
+ui = open(sys.argv[2]).read().strip()
+json.dump({"screenshotBase64": screenshot, "checksum": sys.argv[3], "uiHierarchy": ui}, sys.stdout)
+PYJSON
+      CODE=$(curl -s -m 90 -o /dev/null -w "%{http_code}" -X POST "${CLOUDFLARE_WORKER_URL}/api/emulator/screenshot" \
         -H "Content-Type: application/json" \
-        -d "{
-          \"screenshotBase64\": \"${SCREENSHOT_DATA}\",
-          \"checksum\": \"${CHECKSUM}\",
-          \"uiHierarchy\": \"${UI_HIERARCHY}\"
-        }" > /dev/null 2>&1 || true
-      if [ -n "$SCREENSHOT_DATA" ]; then
-        echo "Screenshot uploaded (${SCREENSHOT_SIZE} bytes)"
-      fi
-      if [ -n "$UI_HIERARCHY" ]; then
-        echo "UI hierarchy uploaded (${UI_SIZE} bytes)"
+        --data-binary @/tmp/vexa_upload.json 2>/dev/null || echo "000")
+      if [ "$CODE" = "200" ]; then
+        [ -s /tmp/vexa_screen.b64 ] && echo "Screenshot uploaded (${SCREENSHOT_SIZE} bytes)"
+        [ -s /tmp/vexa_ui.b64 ] && echo "UI hierarchy uploaded"
+      else
+        echo "Screenshot upload failed (HTTP ${CODE})" >&2
       fi
     else
       echo "Screenshot+UI capture failed, will retry" >&2
@@ -232,19 +242,19 @@ ACTION_PID=""
     HAS_ACTION=$(echo "$ACTION_RESPONSE" | grep -o '"action":{' || echo "")
 
     if [ -n "$HAS_ACTION" ]; then
-      # Extract action fields using python for reliable JSON parsing
-      python3 - "$CLOUDFLARE_WORKER_URL" << 'PYEOF'
-import json, sys, subprocess, urllib.request, urllib.error, base64, hashlib, time, os
+      # Extract action fields using python for reliable JSON parsing.
+      # The action JSON is piped in from the curl above: an urllib GET here
+      # would be stalled by Cloudflare's bot protection.
+      printf '%s' "$ACTION_RESPONSE" | python3 - "$CLOUDFLARE_WORKER_URL" << 'PYEOF'
+import json, sys, subprocess, base64, hashlib, time, os
 
 worker_url = sys.argv[1]
 
-# Fetch the pending action
+# Read the pending action passed on stdin
 try:
-    req = urllib.request.Request(f"{worker_url}/api/emulator/pending-action")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode())
+    data = json.loads(sys.stdin.read() or "{}")
 except Exception as e:
-    print(f"Failed to fetch pending action: {e}")
+    print(f"Failed to parse pending action: {e}")
     sys.exit(1)
 
 action = data.get("action")
@@ -273,7 +283,7 @@ try:
     if act_type == "tap":
         x = int(params["x"] or 540)
         y = int(params["y"] or 1200)
-        subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True, timeout=30)
         success = True
     elif act_type == "swipe":
         x = int(params["x"] or 540)
@@ -281,40 +291,40 @@ try:
         x2 = int(params["x2"] or 540)
         y2 = int(params["y2"] or 500)
         ms = int(params["ms"] or 300)
-        subprocess.run(["adb", "shell", "input", "swipe", str(x), str(y), str(x2), str(y2), str(ms)], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "swipe", str(x), str(y), str(x2), str(y2), str(ms)], check=True, timeout=30)
         success = True
     elif act_type == "scroll":
         x = int(params["x"] or 540)
         y1 = int(params["y"] or 1700)
         y2 = int(params["y2"] or 700)
-        subprocess.run(["adb", "shell", "input", "swipe", str(x), str(y1), str(x), str(y2), "300"], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "swipe", str(x), str(y1), str(x), str(y2), "300"], check=True, timeout=30)
         success = True
     elif act_type == "type":
         text = (params["text"] or "").replace(" ", "%s")
-        subprocess.run(["adb", "shell", "input", "text", text], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "text", text], check=True, timeout=30)
         success = True
     elif act_type == "key":
         keycode = int(params["keycode"] or 66)
-        subprocess.run(["adb", "shell", "input", "keyevent", str(keycode)], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "keyevent", str(keycode)], check=True, timeout=30)
         success = True
     elif act_type == "back":
-        subprocess.run(["adb", "shell", "input", "keyevent", "4"], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "keyevent", "4"], check=True, timeout=30)
         success = True
     elif act_type == "home":
-        subprocess.run(["adb", "shell", "input", "keyevent", "3"], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "keyevent", "3"], check=True, timeout=30)
         success = True
     elif act_type == "recents":
-        subprocess.run(["adb", "shell", "input", "keyevent", "187"], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "keyevent", "187"], check=True, timeout=30)
         success = True
     elif act_type == "launch":
         app = params["app"] or params["text"]
         if app:
-            subprocess.run(["adb", "shell", "monkey", "-p", str(app), "-c", "android.intent.category.LAUNCHER", "1"], check=True, timeout=15000)
+            subprocess.run(["adb", "shell", "monkey", "-p", str(app), "-c", "android.intent.category.LAUNCHER", "1"], check=True, timeout=30)
             success = True
         else:
             error = "No app specified for launch"
     elif act_type == "recents":
-        subprocess.run(["adb", "shell", "input", "keyevent", "187"], check=True, timeout=15000)
+        subprocess.run(["adb", "shell", "input", "keyevent", "187"], check=True, timeout=30)
         success = True
     elif act_type == "screenshot":
         # No device interaction: the capture step below refreshes the frame.
@@ -326,7 +336,7 @@ try:
     elif act_type == "shell":
         shell_cmd = params["text"]
         if shell_cmd:
-            subprocess.run(["adb", "shell", shell_cmd], check=True, timeout=15000)
+            subprocess.run(["adb", "shell", shell_cmd], check=True, timeout=30)
             success = True
         else:
             error = "No shell command specified"
@@ -366,11 +376,11 @@ try:
 
     # UI hierarchy via uiautomator dump
     try:
-        subprocess.run(["adb", "shell", "uiautomator", "dump", "/sdcard/vexa_ui.xml"], capture_output=True, timeout=10000)
+        subprocess.run(["adb", "shell", "uiautomator", "dump", "/sdcard/vexa_ui.xml"], capture_output=True, timeout=30)
         time.sleep(0.2)
         if os.path.exists("/tmp/vexa_ui.xml"):
             os.remove("/tmp/vexa_ui.xml")
-        ui_result = subprocess.run(["adb", "pull", "/sdcard/vexa_ui.xml", "/tmp/vexa_ui.xml"], capture_output=True, timeout=10000)
+        ui_result = subprocess.run(["adb", "pull", "/sdcard/vexa_ui.xml", "/tmp/vexa_ui.xml"], capture_output=True, timeout=30)
         if ui_result.returncode == 0 and os.path.exists("/tmp/vexa_ui.xml"):
             with open("/tmp/vexa_ui.xml", "rb") as f:
                 ui_data = f.read()
@@ -384,7 +394,9 @@ except Exception as e:
     error = f"Action execution error: {e}"
     success = False
 
-# Report result back to Cloudflare Worker
+# Report result back to Cloudflare Worker. Use curl, not urllib: Cloudflare's
+# bot protection stalls a request whose User-Agent is Python-urllib, so the
+# result never landed and the queued action stayed 'pending' forever.
 try:
     result_data = {
         "action": act_type,
@@ -399,14 +411,16 @@ try:
     if ui_hierarchy_b64:
         result_data["uiHierarchy"] = ui_hierarchy_b64
 
-    req = urllib.request.Request(
-        f"{worker_url}/api/emulator/action-result",
-        data=json.dumps(result_data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    proc = subprocess.run(
+        ["curl", "-s", "-m", "30", "-o", "/dev/null", "-w", "%{http_code}",
+         "-X", "POST", f"{worker_url}/api/emulator/action-result",
+         "-H", "Content-Type: application/json",
+         "--data-binary", "@-"],
+        input=json.dumps(result_data).encode("utf-8"),
+        capture_output=True,
+        timeout=40,
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        print(f"Action result reported: {resp.status}")
+    print(f"Action result reported: HTTP {proc.stdout.decode('ascii', 'replace').strip()}")
 except Exception as e:
     print(f"Failed to report action result: {e}")
 PYEOF
