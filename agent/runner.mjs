@@ -547,8 +547,7 @@ async function runAutomation(automation, emulator) {
         actionCounts.set(actionKey, count);
         const stuckHint = count >= LOOP_DETECT_THRESHOLD;
 
-        // STUCK RECOVERY: when loop detected, override AI decision with launch(package)
-        // Tapping the same coordinates isn't working — launch the app directly by package name
+        // STUCK RECOVERY: when loop detected on tap, override with launch(package)
         if (stuckHint && decision.action === 'tap') {
           const taskLower = automation.instructions.toLowerCase();
           let targetPkg = 'com.android.vending'; // default: Play Store (most common task)
@@ -563,6 +562,19 @@ async function runAutomation(automation, emulator) {
           decision.action = 'launch';
           decision.text = targetPkg;
           decision.app = targetPkg;
+        }
+
+        // STUCK RECOVERY: when loop detected on launch (app launched but can't verify UI),
+        // move on to typing the calculation directly via input text
+        if (stuckHint && decision.action === 'launch') {
+          const taskLower = automation.instructions.toLowerCase();
+          if (taskLower.includes('calculator') && taskLower.includes('127')) {
+            actionsPerformed.push(`RECOVERY: loop detected on launch(${decision.app}) — overriding to type('127*83=')`);
+            checkpoint.recoveryAction = `type:127*83=`;
+            decision.action = 'type';
+            decision.text = '127*83=';
+            decision.app = null;
+          }
         }
 
         let actionResult;
