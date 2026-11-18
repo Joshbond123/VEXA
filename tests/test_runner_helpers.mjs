@@ -9,7 +9,7 @@
  * Run: node tests/test_runner_helpers.mjs
  */
 import assert from 'node:assert/strict';
-import { formatUiElements, mapActionToMobilerun } from '../agent/runner.mjs';
+import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor } from '../agent/runner.mjs';
 
 let passed = 0;
 function test(name, fn) {
@@ -70,6 +70,34 @@ test('mapActionToMobilerun maps every supported action to a bridge endpoint', ()
 test('mapActionToMobilerun returns null for actions with no bridge equivalent', () => {
   assert.equal(mapActionToMobilerun('done', {}), null);
   assert.equal(mapActionToMobilerun('fail', {}), null);
+});
+
+test('verifyClaim accepts a result that is actually on screen', () => {
+  const ui = 'package=com.android.calculator2\n  "10541" tap(540,300)';
+  const r = verifyClaim(ui, 'The calculator shows 127 × 83 = 10,541.');
+  assert.equal(r.checked, true);
+  assert.equal(r.value, '10541');
+  assert.equal(r.verified, true);
+});
+
+test('verifyClaim rejects a result the agent invented', () => {
+  // Regression: the agent reported 10,541 while the screen still showed '3'.
+  const ui = 'package=com.android.calculator2\n  "3" tap(540,300)';
+  const r = verifyClaim(ui, 'The calculator shows 127 × 83 = 10,541.');
+  assert.equal(r.checked, true);
+  assert.equal(r.verified, false);
+});
+
+test('verifyClaim does not block a non-numeric completion', () => {
+  assert.equal(verifyClaim('some tree', 'I opened the Settings app.').checked, false);
+  assert.equal(verifyClaim(null, 'result 42').checked, false);
+});
+
+test('recoveryAppFor returns a launchable name, never a package', () => {
+  assert.equal(recoveryAppFor('Open the Calculator app and compute'), 'Calculator');
+  assert.equal(recoveryAppFor('Open Settings and check the Android version'), 'Settings');
+  assert.equal(recoveryAppFor('Install Google Keep from the Play Store'), 'Play Store');
+  assert.ok(!recoveryAppFor('open the calculator').includes('.'), 'must be a name the device can resolve');
 });
 
 console.log(`\n${passed} passed, 0 failed`);

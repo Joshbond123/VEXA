@@ -121,6 +121,43 @@ function screensDiffer(before, after) {
   return before !== after;
 }
 
+/* ------------------------------------------------------------------ recovery helpers */
+/**
+ * Map a task description to the human name of the app the task needs, for
+ * stuck-recovery launches. A name (not a package) is returned so the device
+ * resolves the real package; hardcoding packages here launched nothing.
+ */
+function recoveryAppFor(instructions) {
+  const t = String(instructions || '').toLowerCase();
+  if (t.includes('play store')) return 'Play Store';
+  if (t.includes('calculator')) return 'Calculator';
+  if (t.includes('keep')) return 'Google Keep';
+  if (t.includes('chrome') || t.includes('browser')) return 'Chrome';
+  if (t.includes('camera')) return 'Camera';
+  if (t.includes('setting')) return 'Settings';
+  return 'Play Store';
+}
+
+/* ------------------------------------------------------------------ claim verification */
+/**
+ * Check a value the agent claims it produced against the live UI tree. Only
+ * numeric results are checked: they are the unambiguous ones (a calculator
+ * display, a count, a price), and the UI tree exposes them as element text.
+ * Returns { checked:false } when there is nothing verifiable, so an ordinary
+ * "done" is never blocked.
+ */
+function verifyClaim(uiHierarchy, summary) {
+  if (!uiHierarchy) return { checked: false, reason: 'no ui tree available' };
+  // Prefer the number that follows an '=' or 'equals', else the last number.
+  const nums = String(summary).replace(/,/g, '').match(/\d+(?:\.\d+)?/g) || [];
+  if (!nums.length) return { checked: false, reason: 'no numeric result claimed' };
+  const afterEquals = String(summary).replace(/,/g, '').match(/=\s*(\d+(?:\.\d+)?)/);
+  const value = afterEquals ? afterEquals[1] : nums[nums.length - 1];
+  // A number shown on screen appears as element text such as text="10541".
+  const onScreen = new RegExp(`(^|[^\\d])${value.replace('.', '\\.')}([^\\d]|$)`).test(uiHierarchy);
+  return { checked: true, value, verified: onScreen };
+}
+
 /* ------------------------------------------------------------------ gateway / device */
 async function getGatewayStatus(gatewayUrl) {
   if (!gatewayUrl) return { online: false, reason: 'No gatewayUrl configured in data/emulator.json' };
@@ -581,10 +618,10 @@ async function runAutomation(automation, emulator) {
                 }
               } else if (parsedAction === 'launch') {
                 const targetPkg = parsedArgs.trim();
-                // Reject coordinate-like args (e.g. "0,0", "540,1200") and "undefined" variants
+                // Reject coordinate-like args (e.g. "0,0", "540,1200") and "undefined" variants.
                 const looksLikeCoords = /^\d+,\d+$/.test(targetPkg);
                 const pkg = (looksLikeCoords || targetPkg === 'undefined' || targetPkg === 'undefined,undefined' || !targetPkg)
-                  ? 'com.google.android.calculator'
+                  ? recoveryAppFor(automation.instructions)
                   : targetPkg;
                 console.warn(`Normalizing malformed action "${decision.action}" → launch(${pkg})`);
                 decision.action = parsedAction;
@@ -595,19 +632,40 @@ async function runAutomation(automation, emulator) {
           }
         }
 
-        // Safety check: ensure launch actions have a valid package name
-        if (decision.action === 'launch' && (!decision.text || !decision.text.includes('.'))) {
-          decision.text = 'com.google.android.calculator';
-          decision.app = 'com.google.android.calculator';
+        // Ensure a launch always carries a target. Do NOT force a package: a
+        // human app name ("Calculator") is resolved to the right package by the
+        // device. The previous code overwrote any name without a dot with
+        // com.google.android.calculator, which is not installed, so every
+        // launch-by-name silently became a failed launch.
+        if (decision.action === 'launch' && !decision.text && !decision.app) {
+          const fallback = recoveryAppFor(automation.instructions);
+          decision.text = fallback;
+          decision.app = fallback;
         }
+        if (decision.action === 'launch' && decision.app && !decision.text) decision.text = decision.app;
+        if (decision.action === 'launch' && decision.text && !decision.app) decision.app = decision.text;
 
         if (decision.action === 'done') {
+          // The model is told to verify on screen before claiming success, but
+          // it does not always comply: it once reported "127 × 83 = 10,541"
+          // after looping on the same tap. Check the claimed result against the
+          // live UI tree before believing it, and fail honestly when it is not
+          // there.
+          const claim = verifyClaim(uiHierarchy, decision.summary || decision.thought || '');
           outcomeAchieved = Boolean(decision.outcomeAchieved === true);
           observedResults = decision.summary || decision.thought || 'Task completed.';
           aiNextMinutes = decision.nextRunMinutes ?? null;
-          status = outcomeAchieved ? 'completed' : 'failed';
+          if (outcomeAchieved && claim.checked && !claim.verified) {
+            outcomeAchieved = false;
+            failures = `Agent claimed success (${claim.value}) but that value is not visible on screen — result unverified.`;
+            observedResults = `${observedResults} [UNVERIFIED: ${claim.value} not found in the on-screen UI tree]`;
+            status = 'failed';
+          } else {
+            status = outcomeAchieved ? 'completed' : 'failed';
+          }
           checkpoint.result = status;
           checkpoint.summary = observedResults;
+          checkpoint.claimVerification = claim;
           checkpoints.push(checkpoint);
           break;
         }
@@ -626,34 +684,29 @@ async function runAutomation(automation, emulator) {
         actionCounts.set(actionKey, count);
         const stuckHint = count >= LOOP_DETECT_THRESHOLD;
 
-        // STUCK RECOVERY: when loop detected on tap, override with launch(package)
+        // STUCK RECOVERY: when loop detected on tap, override with launch(app).
+        // Pass a human app name and let the device resolve the package: the old
+        // hardcoded com.google.android.calculator does not exist on the API 28
+        // image (it is com.android.calculator2), so recovery launched nothing.
         if (stuckHint && decision.action === 'tap') {
-          const taskLower = automation.instructions.toLowerCase();
-          let targetPkg = 'com.android.vending'; // default: Play Store (most common task)
-          if (taskLower.includes('calculator') && !taskLower.includes('play store'))
-            targetPkg = 'com.google.android.calculator';
-          else if (taskLower.includes('keep') && !taskLower.includes('play store'))
-            targetPkg = 'com.google.android.keep';
-          else if (taskLower.includes('setting'))
-            targetPkg = 'com.android.settings';
-          actionsPerformed.push(`RECOVERY: loop detected on tap(${decision.x},${decision.y}) — overriding to launch(${targetPkg})`);
-          checkpoint.recoveryAction = `launch:${targetPkg}`;
+          const targetApp = recoveryAppFor(automation.instructions);
+          actionsPerformed.push(`RECOVERY: loop detected on tap(${decision.x},${decision.y}) — overriding to launch(${targetApp})`);
+          checkpoint.recoveryAction = `launch:${targetApp}`;
           decision.action = 'launch';
-          decision.text = targetPkg;
-          decision.app = targetPkg;
+          decision.text = targetApp;
+          decision.app = targetApp;
         }
 
-        // STUCK RECOVERY: when loop detected on launch (app launched but can't verify UI),
-        // move on to typing the calculation directly via input text
+        // STUCK RECOVERY: a launch that keeps repeating means the app either
+        // did not open or the model cannot read the screen it produced. Fall
+        // back to HOME so the next step re-reads a known screen instead of
+        // typing a hardcoded string into an unknown field.
         if (stuckHint && decision.action === 'launch') {
-          const taskLower = automation.instructions.toLowerCase();
-          if (taskLower.includes('calculator') && taskLower.includes('127')) {
-            actionsPerformed.push(`RECOVERY: loop detected on launch(${decision.app}) — overriding to type('127*83=')`);
-            checkpoint.recoveryAction = `type:127*83=`;
-            decision.action = 'type';
-            decision.text = '127*83=';
-            decision.app = null;
-          }
+          actionsPerformed.push(`RECOVERY: loop detected on launch(${decision.app}) — overriding to home`);
+          checkpoint.recoveryAction = 'home';
+          decision.action = 'home';
+          decision.text = null;
+          decision.app = null;
         }
 
         let actionResult;
@@ -730,34 +783,27 @@ async function runAutomation(automation, emulator) {
         // If screen didn't change after all retries AND the action was a tap,
         // override with launch(package) to break out of the deadlock
         if (!screenChanged && decision.action === 'tap') {
-          const taskLower = automation.instructions.toLowerCase();
-          let targetPkg = 'com.android.vending';
-          if (taskLower.includes('calculator') && !taskLower.includes('play store'))
-            targetPkg = 'com.google.android.calculator';
-          else if (taskLower.includes('keep') && !taskLower.includes('play store'))
-            targetPkg = 'com.google.android.keep';
-          else if (taskLower.includes('setting'))
-            targetPkg = 'com.android.settings';
-          console.warn(`STUCK RECOVERY: tap(${decision.x},${decision.y}) produced no screen change — overriding to launch(${targetPkg})`);
-          actionsPerformed.push(`RECOVERY: tap(${decision.x},${decision.y}) stuck — overriding to launch(${targetPkg})`);
-          checkpoint.recoveryAction = `launch:${targetPkg}`;
+          const targetApp = recoveryAppFor(automation.instructions);
+          console.warn(`STUCK RECOVERY: tap(${decision.x},${decision.y}) produced no screen change — overriding to launch(${targetApp})`);
+          actionsPerformed.push(`RECOVERY: tap(${decision.x},${decision.y}) stuck — overriding to launch(${targetApp})`);
+          checkpoint.recoveryAction = `launch:${targetApp}`;
           checkpoint.stuckRecovery = true;
           // Try launching the app directly
           try {
-            await deviceAction(emulator.gatewayUrl, 'launch', { app: targetPkg, text: targetPkg });
+            await deviceAction(emulator.gatewayUrl, 'launch', { app: targetApp, text: targetApp });
             await sleep(LAUNCH_EXTRA_DELAY_MS);
             // Verify screen changed after launch
             const postLaunchScreenshot = await captureScreen(emulator.gatewayUrl);
             if (screensDiffer(screenshotB64, postLaunchScreenshot)) {
               screenChanged = true;
               lastActionError = null;
-              observedResults = `Recovery launch(${targetPkg}) succeeded — screen changed.`;
-              actionsPerformed.push(`RECOVERY: launch(${targetPkg}) — screen changed ✅`);
+              observedResults = `Recovery launch(${targetApp}) succeeded — screen changed.`;
+              actionsPerformed.push(`RECOVERY: launch(${targetApp}) — screen changed ✅`);
             } else {
-              observedResults = `Recovery launch(${targetPkg}) attempted but screen unchanged.`;
+              observedResults = `Recovery launch(${targetApp}) attempted but screen unchanged.`;
             }
           } catch (launchErr) {
-            observedResults = `Recovery launch(${targetPkg}) failed: ${launchErr.message}`;
+            observedResults = `Recovery launch(${targetApp}) failed: ${launchErr.message}`;
           }
         }
 
@@ -904,7 +950,7 @@ async function main() {
 }
 
 // Exported for unit tests; importing this module must not start the agent loop.
-export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum };
+export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor };
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
