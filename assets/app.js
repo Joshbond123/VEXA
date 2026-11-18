@@ -437,11 +437,46 @@
     `).join('');
   }
 
-  function renderReports() {
+  async function renderReports() {
     const list = $('reportsList');
     if (!list) return;
-    // Reports loaded from executions per automation
-    list.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:var(--muted)">Execution reports are shown per automation in the chat view.</div>';
+    try {
+      const data = await cfApi('/api/frontend/automations');
+      const automations = Array.isArray(data.automations) ? data.automations : [];
+      if (!automations.length) {
+        list.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:var(--muted)"><div class="empty-icon" style="width:44px;height:44px;margin:0 auto 12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="opacity:0.4;"><path d=\"M12 2v20M4.93 4.93l14.14 14.14M20 12h-16M4.93 19.07l14.14-14.14\"/></svg></div><h3 style="color:var(--text);margin-bottom:6px;">No executions yet</h3><p class="caption">Run automations to generate execution reports with verified action logs and device state.</p></div>';
+        return;
+      }
+      list.innerHTML = automations.map((a) => {
+        const statusColor = {
+          'completed': 'var(--success)',
+          'failed': 'var(--danger)',
+          'running': 'var(--brand)',
+          'queued': 'var(--warn)',
+          'stopped': 'var(--dim)',
+          'idle': 'var(--muted)',
+        }[a.status] || 'var(--muted)';
+        return `
+          <div class="report-card">
+            <div class="top">
+              <strong>${escapeHtml(a.name)}</strong>
+              <span class="status-pill" style="color:${statusColor};border-color:${statusColor}33;background:${statusColor}14;">${(a.status || 'idle').replace(/_/g, ' ')}</span>
+            </div>
+            <div class="report-meta">
+              ID: ${escapeHtml(a.id)} &#8226; Schedule: ${a.scheduleType === 'once' ? 'Run once' : a.scheduleType === 'ai_decided' ? 'AI-decided' : `Every ${a.intervalMinutes}m`} &#8226; Runs: ${a.runCount || 0}
+            </div>
+            <p>${escapeHtml(a.instructions || 'No instructions recorded')}</p>
+            ${a.lastRunAt ? `<div class="report-meta">Last run: ${new Date(a.lastRunAt).toLocaleString()} &#8226; Status: ${a.lastRunStatus || 'N/A'}</div>` : ''}
+            <div style="margin-top:12px;display:flex;gap:6px;">
+              <button class="btn btn-ghost btn-sm" onclick="window.__vexa.openChat('${a.id}')">View Chat</button>
+              <button class="btn btn-primary btn-sm" onclick="window.__vexa.runNow('${a.id}')">Re-run</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      list.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:var(--danger)"><p>Failed to load execution reports.</p><small>' + escapeHtml(err.message) + '</small></div>';
+    }
   }
 
   /* ------------------------------------------------------------------ provider status */
@@ -722,7 +757,7 @@
         if (drawer) drawer.classList.remove('open');
         if (overlay) overlay.classList.remove('open');
         if (btn.dataset.view === 'reports') renderReports();
-        if (btn.dataset.view === 'settings') renderProviderStatus();
+        if (btn.dataset.view === 'settings') { renderProviderStatus(); renderReports(); }
       });
     });
 
@@ -760,6 +795,7 @@
     on($('mobileStartEmulatorBtn'), 'click', startEmu);
     on($('refreshAllBtn'), 'click', syncAll);
     on($('refreshTopBtn'), 'click', syncAll);
+    on($('refreshReportsBtn'), 'click', renderReports);
 
     const openSettingsBtn = $('openSettingsBtn');
     if (openSettingsBtn) on(openSettingsBtn, 'click', () => document.querySelector('[data-view="settings"]').click());

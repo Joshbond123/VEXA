@@ -1,81 +1,96 @@
-# VEXA Bug-Tracking & Verification Checklist
+# VEXA Bug Tracking Checklist
 
-Status values: `Fixed and verified` | `Fixed but verification incomplete` | `Still unresolved` | `Blocker`
+**Status key:** OPEN | IN_PROGRESS | FIXED | BLOCKED | CLOSED
 
-Architecture: GitHub Actions (backend) + GitHub Pages (frontend) — no Blitz cloud. Backend runs in `.github/workflows/{android-emulator.yml, agent-runner.yml, pages.yml}`. Frontend is static (`index.html`, `assets/`, `phone/`). Data lives in `data/` and is read/written via the GitHub API with the user's PAT.
+---
 
-## Secrets — ALL CONFIGURED (GitHub Actions)
-- [x] `NVIDIA_API_KEY` — set (HTTP 204), verified working with `nvidia/nemotron-3.5-super-vl-120b-a12b`
-- [x] `EMULATOR_ACCESS_TOKEN` — set (HTTP 204)
-- [x] `EMULATOR_GATEWAY_SECRET` — set (HTTP 204)
-- [x] `GH_PAT` — set (HTTP 201), used for GitHub API data writes
-- [x] `EMULATOR_STATE_KEY` — set (HTTP 201), ≥32 chars for AES-256-GCM snapshot encryption
-- [ ] `XAI_API_KEY` — NOT available; Grok provider fallback cannot be live-tested
-- [ ] `OPENAI_API_KEY` — NOT available; OpenAI fallback cannot be live-tested
+## BUG-001: AI Agent Cannot See or Control Android Emulator (CRITICAL)
 
-## Frontier: UI/UX Reconstruction — Fixed and verified
-- [x] Frontend redesigned with professional design system (colors, typography, spacing, SVG icons) — assets/app.css, index.html
-- [x] Responsive layout: desktop sidebar + mobile drawer — CSS media queries
-- [x] Smooth animations/transitions; no excessive motion — CSS transitions, prefers-reduced-motion
-- [x] Loading states, skeleton screens, progress indicators, toasts
-- [x] Dashboard cards, automations, execution reports, settings pages — all views implemented
-- [x] Modern chat interface with tool activity — tool steps, message bubbles
-- [x] Live Android emulator panel; full-screen on mobile — phone stage, expand/fullscreen, touch controls
-- [x] No emojis; consistent styling throughout — inline SVG icons only
-- [x] Deployed to GitHub Pages — live at https://joshbond123.github.io/VEXA/ (pages.yml run 26: success)
+**Status:** BLOCKED
 
-## Frontier: AI Chat & Agent
-- [x] Bug: think/reasoning tags leaking into user-facing responses — Fixed and verified (stripReasoning removes thinking blocks)
-- [x] Bug: chat messages saved but never reach AI backend — Fixed (frontend dispatches agent-runner.yml; agent writes to data/chats/<id>.json)
-- [x] Bug: GitHub PAT misreported as not configured — Fixed (PAT read via Settings, sent to GitHub API for data writes; AI keys are GitHub Secrets)
-- [x] Bug: agent reports task completed when loop merely hit step limit — Fixed (runner requires outcomeAchieved===true)
-- [x] Bug: hard-coded step limits stop legitimate tasks — Fixed (MAX_STEPS configurable via env, default 15)
-- [x] Bug: no provider fallback / key rotation — Fixed (agent rotates keys per request, falls back NVIDIA→Grok→OpenAI)
-- [x] Bug: API keys exposed in frontend — Fixed (AI keys are GitHub Secrets; frontend never handles them)
-- [x] Bug: agent stuck in tap loop (same coords repeated 25+ times) — Fixed (loop detection + override to launch(package); home key at start; AI failure fallback)
-- [x] Bug: agent too slow / hits 15-min Actions timeout — Fixed (timeout 15→55 min, MAX_STEPS 40→15, STEP_DELAY_MS 1500→500, NVIDIA timeout 90s→60s)
-- [ ] Agent executes multi-step tasks autonomously with planning + checkpoints — Fixed but verification incomplete (runner rewritten with per-step screen verification + checkpoints; Play Store opened successfully but blocked by Google sign-in)
-- [ ] Conversation memory / persistent task history — Fixed but verification incomplete (chats persisted to data/chats + data/executions)
-- [ ] Auto-recovery from rate limits, timeouts, failed ops — Fixed but verification incomplete (agent marks rate-limited keys, retries with next key/provider; runner retries failed steps with screen-change backoff)
+**Description:** The AI agent cannot see or control the Android emulator because headless CI screenshot capture fails. `adb exec-out screencap -p`, `adb shell screencap -p`, and `/system/bin/screencap` all produce a 1x1 green pixel on headless (-no-window) emulators. `uiautomator dump` returns null. Root cause: headless emulator with `-gpu swiftshader_indirect -no-window` has no accessible framebuffer for screencap or uiautomator.
 
-## Frontier: Android / DroidRun
-- [x] Integrate mobilerun (droidrun) genuine Android operations — Fixed (vexa-bridge.mjs wraps ADB; mobilerun_bridge.py wraps AndroidDriver; mobilerun 0.7.4 installed)
-- [x] Screen-change verification with retry/backoff — Fixed (full-base64 checksum comparison; retries up to 2x with 1s/2s backoff; launch actions skip verification)
-- [x] Workflow step ordering fixed — Fixed (android-emulator.yml: emulator boots FIRST, bridge starts AFTER ADB ready)
-- [x] ADB retry logic + auto-serial detection — Fixed (vexa-bridge.mjs polls for device readiness every 2s)
-- [x] Bridge binds to 0.0.0.0 — Fixed (mobilerun_bridge.py binds to 0.0.0.0:8765)
-- [x] Emulator reports actual online/offline state — Fixed (gateway health check returns active_emulator_connected, serial, model)
-- [x] Emulator live — gateway at https://sharp-municipality-mercury-proposition.trycloudflare.com (Run 16), active_emulator_connected: true, Pixel 7 Android 14, streaming: true
-- [x] Tap/launch screen change verified — Fixed (agent successfully tapped Play Store icon [screen changed], launch com.android.vending [screen changed])
-- [x] Step deduplication / loop detection — Fixed (same action+coords 3+ times triggers override to launch(package))
-- [x] Stuck recovery — Fixed (when loop detected, auto-overrides tap→launch(com.android.vending); home key pressed at start of each automation)
-- [x] AI failure fallback — Fixed (when all providers fail, falls back to launch(com.android.vending))
-- [ ] Persistent device sessions + reconnection — Fixed but verification incomplete (data/sessions.json + data/emulator.json track sessions)
-- [ ] Whole-AVD persistence via GitHub Releases — Fixed but verification incomplete (save-whole-avd.sh/restore-whole-avd.sh integrated; needs live rotation-cycle test)
-- [!] Play Store + Google account sign-in — BLOCKER: Play Store opens successfully but requires Google account authentication. No Google account credentials found in VIBELY repo or VEXA doc. Need credentials to complete app download/install task.
+**Reproduction:**
+1. Start Android emulator on GitHub Actions ubuntu-26.04 with `-no-window -gpu swiftshader_indirect`
+2. Run `adb exec-out screencap -p` → 1x1 green pixel
+3. Run `adb shell uiautomator dump` → null/empty
 
-## Frontier: Backend / Infra
-- [x] Provider architecture: NVIDIA + Grok + OpenAI-compatible with rotation/fallback — Fixed (verified with NVIDIA key)
-- [x] Gateway auth — Fixed (device actions via public tunnel URL; EMULATOR_GATEWAY_SECRET for coordination)
-- [x] GitHub Actions workflows validated — Fixed but verification incomplete (workflows reviewed and pushed; android-emulator.yml Run 16 succeeded; agent-runner completes in ~60s)
-- [x] No secrets in frontend bundle — Fixed and verified (pages.yml guard present; keys server-side only)
-- [x] set-secrets.js reads secrets from env vars — Fixed (no hardcoded credentials; push protection compliant)
+**Investigation:**
+- Xvfb + swiftshader_indirect + NO -no-window: FAILED (emulator never boots, adb device not found, reactivecircus/android-emulator-runner times out) — commit 4ffc3dd, run 44270884285
+- reactivecircus/android-emulator-runner with Xvfb :99: FAILED (stuck, no logs after 10+ min) — runs 44261895675, 44273308244
+- Manual Android SDK setup + direct emulator start: STUCK (no logs after 3+ min) — run 44274197148, 44275408442
+- Manual Android SDK setup with google_apis API 30 (lighter image): STUCK (same no-logs issue) — run 44275408442
 
-## Deployment
-- [x] GitHub Pages deployed — https://joshbond123.github.io/VEXA/ (pages.yml run 26: success)
-- [x] Android emulator workflow — Run 16 success; gateway live at trycloudflare.com URL
-- [x] All changes committed and pushed to origin/vexa (commit fabf47a)
+**Fix attempted:**
+- `run-emulator-session.sh`: Multi-method screenshot capture (screenrecord+ffmpeg, exec-out screencap, screencap to /sdcard pull), UI hierarchy via uiautomator dump + dumpsys fallback, Cloudflare Worker as permanent gateway
+- `.github/workflows/android-emulator.yml`: Multiple iterations (Xvfb, reactivecircus runner, manual SDK setup)
 
-## Verification-incomplete blockers (documented, not fabricated)
-- No XAI_API_KEY/OPENAI_API_KEY → Grok/OpenAI provider fallback cannot be live-tested (NVIDIA verified)
-- Whole-AVD persistence not yet live-tested → needs a full emulator rotation cycle to verify save/restore
-- Play Store + Google account sign-in — BLOCKER: Play Store opens but requires Google account authentication. Need VIBELY Google account credentials to complete app download/install task.
-- Browser/device lab unavailable → Responsive layout verified via CSS + server load only, not real devices
+**Next steps:**
+- Try API level 28 google_apis image (smaller, faster boot)
+- Try without -wipe-data for persistence
+- Try different GitHub Actions runner (ubuntu-24.04 vs ubuntu-26.04)
+- Consider scrcpy H.264 screen mirroring via ADB tunnel as alternative to screenrecord+ffmpeg
 
-## Latest E2E Test Results (Run 18, 2026-11-17T08:55:31Z)
-- Agent opened Play Store: `tap(151,664)` → [screen changed] ✅
-- Recovery override triggered: `launch(com.android.vending)` → [screen changed] ✅
-- Play Store reached sign-in screen — cannot proceed without Google credentials
-- Honest failure report: "Task cannot be completed: Google Play Store requires sign-in to search for and install apps. No credentials available to proceed."
-- Agent did NOT fabricate success ✅
-- Total execution time: ~60 seconds (well within 55-min Actions window) ✅
+**Impact:** Calculator Math Task (auto_calculator_math_1) cannot be verified. Agent launches com.google.android.calculator and types 127*83= but cannot verify result due to green screen. Mathematical result 127 × 83 = 10,541 (unverified on device).
+
+---
+
+## BUG-002: Settings Page Nav Label Confusing
+
+**Status:** FIXED
+
+**Description:** Settings page nav item was labeled "AI Providers" instead of "Settings", making it hard for users to find.
+
+**Fix:** Renamed nav item to "Settings" in both desktop sidebar and mobile drawer (commit 8f00150).
+
+**Verification:** Settings page accessible from navigation, routes work, load/save persist via Cloudflare KV, credentials secure backend-only.
+
+---
+
+## BUG-003: Google Account Credentials Missing for Android Sign-in
+
+**Status:** OPEN
+
+**Description:** Google account email replyraven001@gmail.com found but NO password found anywhere. Android sign-in blocker prevents email persistence on VEXA emulator.
+
+**Impact:** Cannot log in to Google account on emulator, cannot preserve email session, cannot use Play Store with purchased/installed apps.
+
+**Next steps:** User needs to provide Google account password or app-specific password.
+
+---
+
+## BUG-004: Calculator Math Task E2E Test Fails
+
+**Status:** BLOCKED (depends on BUG-001)
+
+**Description:** auto_calculator_math_1 — open Calculator, compute 127 × 83 = 10,541, verify result. Agent launches com.google.android.calculator correctly and types 127*83= but cannot verify due to green screen (BUG-001).
+
+**Status:** FAILED — outcome False, result 10,541 unverified.
+
+**Impact:** 1 of 12 mandatory E2E tests cannot pass until emulator screenshot access is fixed.
+
+---
+
+## Implementation Notes
+
+**Screenrecord+ffmpeg approach (committed in run-emulator-session.sh):**
+- Continuous `adb shell screenrecord` H.264 stream to /sdcard/vexa_record.mp4
+- ffmpeg extracts individual PNG frames from the video file
+- Fallbacks: `adb exec-out screencap -p`, `adb shell screencap -p /sdcard/` then pull
+- UI hierarchy: `adb shell uiautomator dump /sdcard/vexa_ui.xml` + `dumpsys window windows` fallback
+- All screenshots + UI hierarchy uploaded to Cloudflare Worker `/api/emulator/screenshot`
+- Frontend polls `/api/public/screenshot` and `/api/public/device-state`
+
+**Cloudflare Worker (deployed: version b9a51a99):**
+- https://vexa-ai-agent.replyraven001.workers.dev
+- Endpoints: /api/public/health, /api/public/screenshot, /api/public/device-state, /api/emulator/*
+- D1 database: 43090570-0d1a-4ff5-976a-d23a653df304
+- KV namespaces: CONFIG_KV, SESSION_KV
+
+**GitHub Pages (deployed):**
+- https://joshbond123.github.io/VEXA/
+
+**GitHub Secrets configured (5):**
+- NVIDIA_API_KEY, EMULATOR_ACCESS_TOKEN, EMULATOR_GATEWAY_SECRET, GH_PAT, EMULATOR_STATE_KEY
+
+---
