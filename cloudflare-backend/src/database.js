@@ -20,7 +20,9 @@ export async function initDatabase(db) {
   await db.exec(`CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, automation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, execution_id TEXT, FOREIGN KEY (automation_id) REFERENCES automations(id))`);
   await db.exec(`CREATE TABLE IF NOT EXISTS executions (id TEXT PRIMARY KEY, automation_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT DEFAULT CURRENT_TIMESTAMP, finished_at TEXT, task_received TEXT, actions_performed TEXT, apps_interacted TEXT, observed_results TEXT, outcome_achieved INTEGER DEFAULT 0, failures TEXT, checkpoints TEXT, next_execution_scheduled TEXT, resuming INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (automation_id) REFERENCES automations(id))`);
   await db.exec(`CREATE TABLE IF NOT EXISTS emulator_sessions (id TEXT PRIMARY KEY, gateway_url TEXT NOT NULL, status TEXT DEFAULT 'offline', device_model TEXT, android_version TEXT, resolution TEXT, logged_in_account TEXT, active_run_id TEXT, last_heartbeat TEXT, registered_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
-  await db.exec(`CREATE TABLE IF NOT EXISTS device_state (id TEXT PRIMARY KEY DEFAULT 'current', screen_checksum TEXT, last_screenshot_url TEXT, last_action TEXT, last_action_result TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  await db.exec(`CREATE TABLE IF NOT EXISTS device_state (id TEXT PRIMARY KEY DEFAULT 'current', screen_checksum TEXT, last_screenshot_url TEXT, last_action TEXT, last_action_result TEXT, ui_hierarchy TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  // Add ui_hierarchy column to existing databases (SQLite doesn't support ADD COLUMN IF NOT EXISTS)
+  try { await db.exec(`ALTER TABLE device_state ADD COLUMN ui_hierarchy TEXT`); } catch { /* column may already exist */ }
   await db.exec(`CREATE TABLE IF NOT EXISTS provider_usage (id TEXT PRIMARY KEY DEFAULT 'default', provider TEXT NOT NULL, requests_count INTEGER DEFAULT 0, errors_count INTEGER DEFAULT 0, last_used TEXT, rate_limited_until TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_chats_automation_id ON chats(automation_id)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_chats_timestamp ON chats(timestamp)`);
@@ -205,21 +207,23 @@ export async function getDeviceState(db) {
 export async function upsertDeviceState(db, state) {
   const existing = await db.prepare('SELECT id FROM device_state WHERE id = ?').bind('current').first();
   if (existing) {
-    await db.prepare(`UPDATE device_state SET screen_checksum = ?, last_screenshot_url = ?, last_action = ?, last_action_result = ?, updated_at = ? WHERE id = ?`).bind(
+    await db.prepare(`UPDATE device_state SET screen_checksum = ?, last_screenshot_url = ?, last_action = ?, last_action_result = ?, ui_hierarchy = ?, updated_at = ? WHERE id = ?`).bind(
       state.screenChecksum || null,
       state.lastScreenshotUrl || null,
       state.lastAction || null,
       state.lastActionResult || null,
+      state.uiHierarchy || null,
       new Date().toISOString(),
       'current'
     ).run();
   } else {
-    await db.prepare(`INSERT INTO device_state (id, screen_checksum, last_screenshot_url, last_action, last_action_result, updated_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(
+    await db.prepare(`INSERT INTO device_state (id, screen_checksum, last_screenshot_url, last_action, last_action_result, ui_hierarchy, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
       'current',
       state.screenChecksum || null,
       state.lastScreenshotUrl || null,
       state.lastAction || null,
       state.lastActionResult || null,
+      state.uiHierarchy || null,
       new Date().toISOString()
     ).run();
   }

@@ -178,12 +178,13 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   if (path === '/api/emulator/action-result' && method === 'POST') {
     try {
       const body = await request.json();
-      const { action, success, error, screenshotBase64, checksum } = body;
+      const { action, success, error, screenshotBase64, checksum, uiHierarchy } = body;
 
       // Clear the pending action and record the result
       await upsertDeviceState(env.DB, {
         screenChecksum: checksum || null,
         lastScreenshotUrl: screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null,
+        uiHierarchy: uiHierarchy || null,
         lastAction: null,
         lastActionResult: JSON.stringify({ action, success, error, timestamp: new Date().toISOString() }),
       });
@@ -207,11 +208,12 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   if (path === '/api/emulator/screenshot' && method === 'POST') {
     try {
       const body = await request.json();
-      const { screenshotBase64, checksum, url: screenshotUrl } = body;
+      const { screenshotBase64, checksum, url: screenshotUrl, uiHierarchy } = body;
 
       await upsertDeviceState(env.DB, {
         screenChecksum: checksum || null,
         lastScreenshotUrl: screenshotUrl || (screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null),
+        uiHierarchy: uiHierarchy || null,
         updatedAt: new Date().toISOString(),
       });
 
@@ -219,6 +221,21 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
     }
+  }
+
+  // GET /api/public/device-state - get UI hierarchy and device state for AI agent
+  if (path === '/api/public/device-state' && method === 'GET') {
+    const state = await getDeviceState(env.DB);
+    if (!state) {
+      return Response.json({ error: 'No device state available' }, { status: 404, headers: corsHeaders() });
+    }
+    return Response.json({
+      ok: true,
+      screenshotUrl: state.last_screenshot_url || null,
+      uiHierarchy: state.ui_hierarchy || null,
+      lastActionResult: state.last_action_result || null,
+      updatedAt: state.updated_at || null,
+    }, { headers: corsHeaders() });
   }
 
   // DELETE /api/emulator/session - unregister emulator

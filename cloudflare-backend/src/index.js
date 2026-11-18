@@ -114,8 +114,18 @@ export default {
         try {
           const state = await getDeviceState(env.DB);
           if (state?.lastScreenshotUrl) {
+            const url = state.lastScreenshotUrl;
+            // Handle data URLs (base64-encoded images from emulator)
+            if (url.startsWith('data:')) {
+              const base64 = url.split(',')[1];
+              const imgBuf = Buffer.from(base64, 'base64');
+              return new Response(imgBuf, {
+                headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
+              });
+            }
+            // Handle regular URLs
             try {
-              const imgRes = await fetch(state.lastScreenshotUrl);
+              const imgRes = await fetch(url);
               if (imgRes.ok) {
                 const imgBuf = await imgRes.arrayBuffer();
                 return new Response(imgBuf, {
@@ -132,6 +142,25 @@ export default {
           return new Response(BLANK_PNG, {
             headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
           });
+        }
+      }
+
+      // GET /api/public/device-state - get UI hierarchy and device state for AI agent
+      if (path === '/api/public/device-state' && method === 'GET') {
+        try {
+          const state = await getDeviceState(env.DB);
+          if (!state) {
+            return Response.json({ ok: true, screenshotUrl: null, uiHierarchy: null, lastActionResult: null }, { headers: corsHeaders() });
+          }
+          return Response.json({
+            ok: true,
+            screenshotUrl: state.last_screenshot_url || null,
+            uiHierarchy: state.ui_hierarchy || null,
+            lastActionResult: state.last_action_result || null,
+            updatedAt: state.updated_at || null,
+          }, { headers: corsHeaders() });
+        } catch (err) {
+          return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
         }
       }
 

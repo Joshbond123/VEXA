@@ -118,18 +118,18 @@ HEARTBEAT_PID=""
 HEARTBEAT_PID=$!
 echo "Heartbeat PID: $HEARTBEAT_PID"
 
-# --- SCREENSHOT UPLOAD LOOP ---
-# Captures screenshots via ADB and uploads to Cloudflare Worker so the AI agent
-# can see the live device screen through GET /api/public/screenshot
-# Tries multiple capture methods because `adb exec-out screencap -p` may return
-# a placeholder (1x1 green) in headless GitHub Actions emulator environments.
+# --- SCREENSHOT & UI HIERARCHY UPLOAD LOOP ---
+# Captures screenshots and UI hierarchy via ADB and uploads to Cloudflare Worker.
+# Screenshots may be 1x1 green in headless CI, so UI hierarchy (uiautomator dump)
+# is the primary screen-awareness mechanism for the AI agent.
 SCREENSHOT_PID=""
 (
   while true; do
     SCREENSHOT_DATA=""
     SCREENSHOT_SIZE=0
+    UI_HIERARCHY=""
 
-    # Method 1: adb exec-out screencap -p (direct pipe)
+    # --- Screenshot capture (multiple methods) ---
     RAW=$(adb exec-out screencap -p 2>/dev/null || true)
     if [ -n "$RAW" ]; then
       SIZE=$(echo -n "$RAW" | wc -c)
@@ -138,8 +138,6 @@ SCREENSHOT_PID=""
         SCREENSHOT_SIZE=$SIZE
       fi
     fi
-
-    # Method 2: write to /sdcard then pull (works when exec-out binary pipe fails)
     if [ -z "$SCREENSHOT_DATA" ]; then
       adb shell screencap -p /sdcard/vexa_screen.png 2>/dev/null || true
       sleep 0.5
@@ -152,8 +150,6 @@ SCREENSHOT_PID=""
         fi
       fi
     fi
-
-    # Method 3: full path to screencap binary
     if [ -z "$SCREENSHOT_DATA" ]; then
       adb shell /system/bin/screencap -p /sdcard/vexa_screen2.png 2>/dev/null || true
       sleep 0.5
@@ -167,17 +163,26 @@ SCREENSHOT_PID=""
       fi
     fi
 
-    if [ -n "$SCREENSHOT_DATA" ] && [ "$SCREENSHOT_SIZE" -gt 1000 ]; then
-      # Compute a simple checksum
+    # --- UI hierarchy capture via uiautomator dump ---
+    adb shell uiautomator dump /sdcard/vexa_ui.xml 2>/dev/null || true
+    sleep 0.3
+    UI_RAW=$(adb pull /sdcard/vexa_ui.xml - 2>/dev/null || true)
+    if [ -n "$UI_RAW" ] && [ $(echo -n "$UI_RAW" | wc -c) -gt 100 ]; then
+      UI_HIERARCHY=$(echo -n "$UI_RAW" | base64 -w 0 2>/dev/null || echo "")
+    fi
+
+    # Upload screenshot + UI hierarchy to Cloudflare Worker
+    if [ -n "$SCREENSHOT_DATA" ] || [ -n "$UI_HIERARCHY" ]; then
       CHECKSUM=$(echo -n "$SCREENSHOT_DATA" | md5sum | cut -d' ' -f1)
       curl -s -X POST "${CLOUDFLARE_WORKER_URL}/api/emulator/screenshot" \
         -H "Content-Type: application/json" \
         -d "{
           \"screenshotBase64\": \"${SCREENSHOT_DATA}\",
-          \"checksum\": \"${CHECKSUM}\"
+          \"checksum\": \"${CHECKSUM}\",
+          \"uiHierarchy\": \"${UI_HIERARCHY}\"
         }" > /dev/null 2>&1 || true
     else
-      echo "Screenshot capture failed (size=$SCREENSHOT_SIZE), will retry" >&2
+      echo "Screenshot+UI capture failed, will retry" >&2
     fi
     sleep 2
   done
@@ -295,30 +300,50 @@ try:
         import time
         time.sleep(1.5)
 
-    # Capture screenshot after action — try multiple methods because
-    # `adb exec-out screencap -p` may return a 1x1 placeholder in headless CI
-    def capture_screenshot():
-        import base64, hashlib
+    # Capture screenshot + UI hierarchy after action — try multiple methods
+    # because `adb exec-out screencap -p` may return a 1x1 placeholder in headless CI
+    def capture_screenshot_and_ui():
+        import base64, hashlib, time
+        screenshot_b64 = None
+        checksum = None
+        ui_hierarchy_b64 = None
+
+        # --- Screenshot ---
         # Method 1: direct exec-out
         result = subprocess.run(["adb", "exec-out", "screencap", "-p"], capture_output=True, timeout=20000)
         if result.returncode == 0 and len(result.stdout) > 1000:
-            return base64.b64encode(result.stdout).decode("ascii"), hashlib.md5(result.stdout).hexdigest()
-        # Method 2: write to /sdcard then pull
-        subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/vexa_screen.png"], capture_output=True, timeout=10000)
-        import time
-        time.sleep(0.5)
-        result2 = subprocess.run(["adb", "pull", "/sdcard/vexa_screen.png", "-"], capture_output=True, timeout=20000)
-        if result2.returncode == 0 and len(result2.stdout) > 1000:
-            return base64.b64encode(result2.stdout).decode("ascii"), hashlib.md5(result2.stdout).hexdigest()
-        # Method 3: full binary path
-        subprocess.run(["adb", "shell", "/system/bin/screencap", "-p", "/sdcard/vexa_screen2.png"], capture_output=True, timeout=10000)
-        time.sleep(0.5)
-        result3 = subprocess.run(["adb", "pull", "/sdcard/vexa_screen2.png", "-"], capture_output=True, timeout=20000)
-        if result3.returncode == 0 and len(result3.stdout) > 1000:
-            return base64.b64encode(result3.stdout).decode("ascii"), hashlib.md5(result3.stdout).hexdigest()
-        return None, None
+            screenshot_b64 = base64.b64encode(result.stdout).decode("ascii")
+            checksum = hashlib.md5(result.stdout).hexdigest()
+        else:
+            # Method 2: write to /sdcard then pull
+            subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/vexa_screen.png"], capture_output=True, timeout=10000)
+            time.sleep(0.5)
+            result2 = subprocess.run(["adb", "pull", "/sdcard/vexa_screen.png", "-"], capture_output=True, timeout=20000)
+            if result2.returncode == 0 and len(result2.stdout) > 1000:
+                screenshot_b64 = base64.b64encode(result2.stdout).decode("ascii")
+                checksum = hashlib.md5(result2.stdout).hexdigest()
+            else:
+                # Method 3: full binary path
+                subprocess.run(["adb", "shell", "/system/bin/screencap", "-p", "/sdcard/vexa_screen2.png"], capture_output=True, timeout=10000)
+                time.sleep(0.5)
+                result3 = subprocess.run(["adb", "pull", "/sdcard/vexa_screen2.png", "-"], capture_output=True, timeout=20000)
+                if result3.returncode == 0 and len(result3.stdout) > 1000:
+                    screenshot_b64 = base64.b64encode(result3.stdout).decode("ascii")
+                    checksum = hashlib.md5(result3.stdout).hexdigest()
 
-    screenshot_b64, checksum = capture_screenshot()
+        # --- UI hierarchy via uiautomator dump ---
+        try:
+            subprocess.run(["adb", "shell", "uiautomator", "dump", "/sdcard/vexa_ui.xml"], capture_output=True, timeout=10000)
+            time.sleep(0.3)
+            ui_result = subprocess.run(["adb", "pull", "/sdcard/vexa_ui.xml", "-"], capture_output=True, timeout=10000)
+            if ui_result.returncode == 0 and len(ui_result.stdout) > 100:
+                ui_hierarchy_b64 = base64.b64encode(ui_result.stdout).decode("ascii")
+        except Exception:
+            pass
+
+        return screenshot_b64, checksum, ui_hierarchy_b64
+
+    screenshot_b64, checksum, ui_hierarchy_b64 = capture_screenshot_and_ui()
 except subprocess.CalledProcessError as e:
     error = f"ADB command failed: {e}"
 except Exception as e:
@@ -337,6 +362,8 @@ try:
         result_data["screenshotBase64"] = screenshot_b64
     if checksum:
         result_data["checksum"] = checksum
+    if ui_hierarchy_b64:
+        result_data["uiHierarchy"] = ui_hierarchy_b64
 
     req = urllib.request.Request(
         f"{worker_url}/api/emulator/action-result",

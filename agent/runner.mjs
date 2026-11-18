@@ -192,11 +192,22 @@ async function mobilerunGet(endpoint, timeoutMs = 10000) {
 }
 
 async function captureScreen(gatewayUrl) {
+  // Try mobilerun bridge first (for screenshot)
   try {
     const data = await mobilerunGet('/device/screenshot', 8000);
-    if (data.ok && data.screenshot_base64) return data.screenshot_base64;
+    if (data.ok && data.screenshot_base64) return { screenshotB64: data.screenshot_base64, uiHierarchy: data.ui_hierarchy || null };
   } catch { /* fall through to gateway */ }
-  return captureScreenViaGateway(gatewayUrl);
+  // Fall back to gateway screenshot + device-state endpoints
+  const screenshotB64 = await captureScreenViaGateway(gatewayUrl);
+  let uiHierarchy = null;
+  try {
+    const res = await fetchWithTimeout(`${gatewayUrl.replace(/\/$/, '')}/api/public/device-state`, { timeoutMs: 8000 });
+    if (res.ok) {
+      const state = await res.json();
+      uiHierarchy = state.uiHierarchy || null;
+    }
+  } catch { /* UI hierarchy unavailable */ }
+  return { screenshotB64, uiHierarchy };
 }
 
 async function deviceAction(gatewayUrl, action, params = {}) {
@@ -238,12 +249,15 @@ async function inspectDeviceState(gatewayUrl) {
 /* ------------------------------------------------------------------ Play Store "Complete account setup" gate dismissal */
 async function dismissPlayStoreBlockers(gatewayUrl) {
   // Capture current screen and ask AI if a Play Store account-setup gate is visible
-  const screenshotB64 = await captureScreen(gatewayUrl);
+  const screenData = await captureScreen(gatewayUrl);
+  const screenshotB64 = screenData.screenshotB64;
+  const uiHierarchy = screenData.uiHierarchy;
   const decision = await askAgentBrain({
     task: "Check if this screen shows a Google Play Store 'Complete account setup' or 'Add a payment option' gate/dialog. If yes, respond with action 'tap' at the Skip button coordinates. If no gate is visible, respond with action 'done'.",
     history: [],
     stepIndex: 0,
     screenshotBase64: screenshotB64,
+    uiHierarchy: uiHierarchy,
     deviceState: { source: 'gate-check' },
   });
 
@@ -308,15 +322,20 @@ async function callProvider(provider, messages, attempt = 1) {
   return stripReasoning(raw);
 }
 
-async function askAgentBrain({ task, history, stepIndex, screenshotBase64, deviceState, stuckHint }) {
+async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHierarchy, deviceState, stuckHint }) {
   const stuckSection = stuckHint
     ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without screen change.\nTRY A DIFFERENT APPROACH:\n  • Use "launch" with package name (e.g. {"action":"launch","app":"com.android.vending"}) instead of tap\n  • Press "home" to reset to home screen, then try again\n  • Use "swipe" instead of "tap"\n  • Use "type" to search in the search bar\nDo NOT keep tapping the same coordinates.\n`
+    : '';
+
+  // Build UI hierarchy text description for the agent
+  const uiSection = uiHierarchy
+    ? `\n\nUI HIERARCHY (from uiautomator dump):\n${uiHierarchy.slice(0, 6000)}\n\nUse the UI hierarchy above to identify clickable elements, their text labels, and approximate coordinates. The hierarchy contains <node> elements with attributes like text, content-desc, clickable, bounds (in [x1,y1,x2,y2] format). Focus on buttons, text fields, and interactive elements relevant to your task.\n`
     : '';
 
   const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach — launch the app by package name, swipe, or press home first.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
 
   const userContent = [
-    { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1000)}` },
+    { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1000)}${uiSection}` },
   ];
   if (screenshotBase64) {
     userContent.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${screenshotBase64}` } });
@@ -362,6 +381,7 @@ async function runAutomation(automation, emulator) {
 
   const actionCounts = new Map();
   let lastScreenChecksum = null;
+  let lastUiHierarchy = null;
   let stepsWithoutProgress = 0;
 
   // Restore action counts from persisted state if resuming
@@ -407,17 +427,21 @@ async function runAutomation(automation, emulator) {
 
       for (let step = startStep; step < MAX_STEPS; step++) {
         const checkpoint = { step: step + 1, at: new Date().toISOString(), resuming: isResuming && step === startStep };
-        const screenshotB64 = await captureScreen(emulator.gatewayUrl);
-        const screenChecksumVal = screenChecksum(screenshotB64);
+        const screenData = await captureScreen(emulator.gatewayUrl);
+        const screenshotB64 = screenData.screenshotB64;
+        const uiHierarchy = screenData.uiHierarchy;
+        const screenChecksumVal = screenChecksum(screenshotB64 || '');
         const deviceState = await inspectDeviceState(emulator.gatewayUrl);
 
-        const screenStuck = lastScreenChecksum !== null && screenChecksumVal === lastScreenChecksum;
+        const uiChanged = uiHierarchy !== null && uiHierarchy !== lastUiHierarchy;
+        const screenStuck = lastScreenChecksum !== null && screenChecksumVal === lastScreenChecksum && !uiChanged;
         if (screenStuck) {
           stepsWithoutProgress++;
         } else {
           stepsWithoutProgress = 0;
         }
         lastScreenChecksum = screenChecksumVal;
+        lastUiHierarchy = uiHierarchy;
 
         if (stepsWithoutProgress >= NO_PROGRESS_STEPS) {
           status = 'failed';
@@ -431,14 +455,15 @@ async function runAutomation(automation, emulator) {
 
         let decision;
         try {
-          decision = await askAgentBrain({
-            task: automation.instructions,
-            history: actionsPerformed,
-            stepIndex: step,
-            screenshotBase64: screenshotB64,
-            deviceState,
-            stuckHint: stepsWithoutProgress >= 2,
-          });
+        decision = await askAgentBrain({
+          task: automation.instructions,
+          history: actionsPerformed,
+          stepIndex: step,
+          screenshotBase64: screenshotB64,
+          uiHierarchy: uiHierarchy,
+          deviceState,
+          stuckHint: stepsWithoutProgress >= 2,
+        });
         } catch (aiErr) {
           // AI failure fallback: launch Play Store directly instead of failing the whole task
           console.warn(`AI provider failed: ${aiErr.message}. Falling back to launch(com.android.vending)`);
@@ -542,7 +567,9 @@ async function runAutomation(automation, emulator) {
               : STEP_DELAY_MS;
             await sleep(settleMs);
 
-            const postScreenshot = await captureScreen(emulator.gatewayUrl);
+            const postScreenData = await captureScreen(emulator.gatewayUrl);
+            const postScreenshot = postScreenData.screenshotB64;
+            const postUiHierarchy = postScreenData.uiHierarchy;
             const postState = await inspectDeviceState(emulator.gatewayUrl);
 
             checkpoint.postScreenshotBytes = postScreenshot.length;
@@ -554,7 +581,8 @@ async function runAutomation(automation, emulator) {
               break;
             }
 
-            if (screensDiffer(screenshotB64, postScreenshot)) {
+            const uiChanged = postUiHierarchy && postUiHierarchy !== uiHierarchy;
+            if (screensDiffer(screenshotB64, postScreenshot) || uiChanged) {
               screenChanged = true;
               break;
             }
