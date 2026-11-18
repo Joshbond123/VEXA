@@ -10,10 +10,21 @@
 #   - Emulator → executes action via ADB → POST /api/emulator/action-result
 #   - Emulator → captures screenshot via ADB → POST /api/emulator/screenshot → stored in D1
 #   - Agent runner → GET /api/public/screenshot → reads latest screenshot from D1
+#   - Agent runner → GET /api/public/device-state → reads UI hierarchy from D1
+#
+# DISPLAY=:99 is set because Xvfb virtual framebuffer is started by the
+# GitHub Actions workflow, giving the headless emulator a real display
+# surface so `adb exec-out screencap -p` captures actual screenshots.
 set -uo pipefail
+
+export DISPLAY="${DISPLAY:-:99}"
 
 CLOUDFLARE_WORKER_URL="https://vexa-ai-agent.replyraven001.workers.dev"
 EMULATOR_ACCESS_TOKEN="${EMULATOR_ACCESS_TOKEN:-}"
+
+echo "=== VEXA Emulator Session Starting ==="
+echo "Display: $DISPLAY"
+echo "Cloudflare Worker: $CLOUDFLARE_WORKER_URL"
 
 echo "Waiting for Android emulator to be online..."
 adb wait-for-device
@@ -33,6 +44,8 @@ done
 DEVICE_MODEL=$(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r' || echo "Pixel 7")
 ANDROID_VERSION=$(adb shell getprop ro.build.version.release 2>/dev/null | tr -d '\r' || echo "14")
 RESOLUTION=$(adb shell wm size 2>/dev/null | grep -oP '\d+x\d+' || echo "1080x2400")
+
+echo "Device: $DEVICE_MODEL Android $ANDROID_VERSION $RESOLUTION"
 
 # Start VEXA ADB Bridge AFTER emulator is ready (for local device control)
 PORT=8080 node android-emulator/vexa-bridge.mjs > /tmp/gateway.log 2>&1 &
@@ -120,8 +133,8 @@ echo "Heartbeat PID: $HEARTBEAT_PID"
 
 # --- SCREENSHOT & UI HIERARCHY UPLOAD LOOP ---
 # Captures screenshots and UI hierarchy via ADB and uploads to Cloudflare Worker.
-# Screenshots may be 1x1 green in headless CI, so UI hierarchy (uiautomator dump)
-# is the primary screen-awareness mechanism for the AI agent.
+# With Xvfb virtual display (+DISPLAY=:99) and NO -no-window flag, the emulator
+# has a real display surface so `adb exec-out screencap -p` captures actual screenshots.
 SCREENSHOT_PID=""
 (
   while true; do
@@ -129,7 +142,8 @@ SCREENSHOT_PID=""
     SCREENSHOT_SIZE=0
     UI_HIERARCHY=""
 
-    # --- Screenshot capture (multiple methods) ---
+    # --- Screenshot capture via ADB (now works with Xvfb display) ---
+    # Method 1: adb exec-out screencap -p (direct pipe — fastest)
     RAW=$(adb exec-out screencap -p 2>/dev/null || true)
     if [ -n "$RAW" ]; then
       SIZE=$(echo -n "$RAW" | wc -c)
@@ -138,6 +152,8 @@ SCREENSHOT_PID=""
         SCREENSHOT_SIZE=$SIZE
       fi
     fi
+
+    # Method 2: write to /sdcard then pull (fallback when exec-out pipe fails)
     if [ -z "$SCREENSHOT_DATA" ]; then
       adb shell screencap -p /sdcard/vexa_screen.png 2>/dev/null || true
       sleep 0.5
@@ -150,6 +166,8 @@ SCREENSHOT_PID=""
         fi
       fi
     fi
+
+    # Method 3: full path to screencap binary
     if [ -z "$SCREENSHOT_DATA" ]; then
       adb shell /system/bin/screencap -p /sdcard/vexa_screen2.png 2>/dev/null || true
       sleep 0.5
@@ -164,8 +182,8 @@ SCREENSHOT_PID=""
     fi
 
     # --- UI hierarchy capture via uiautomator dump ---
-    adb shell uiautomator dump /sdcard/vexa_ui.xml 2>/tmp/uiauto_err.log || true
-    sleep 0.5
+    adb shell uiautomator dump /sdcard/vexa_ui.xml 2>/dev/null || true
+    sleep 0.3
     adb pull /sdcard/vexa_ui.xml /tmp/vexa_ui.xml 2>/dev/null || true
     if [ -f /tmp/vexa_ui.xml ]; then
       UI_SIZE=$(wc -c < /tmp/vexa_ui.xml 2>/dev/null || echo "0")
@@ -173,7 +191,7 @@ SCREENSHOT_PID=""
         UI_HIERARCHY=$(base64 -w 0 /tmp/vexa_ui.xml 2>/dev/null || echo "")
       fi
     fi
-    # Fallback: try dumpsys window windows if uiautomator failed
+    # Fallback: try dumpsys window windows if uiautomator unavailable
     if [ -z "$UI_HIERARCHY" ]; then
       DUMPSYS_DATA=$(adb shell dumpsys window windows 2>/dev/null | head -100 || echo "")
       if [ -n "$DUMPSYS_DATA" ] && [ $(echo -n "$DUMPSYS_DATA" | wc -c) -gt 100 ]; then
@@ -191,6 +209,12 @@ SCREENSHOT_PID=""
           \"checksum\": \"${CHECKSUM}\",
           \"uiHierarchy\": \"${UI_HIERARCHY}\"
         }" > /dev/null 2>&1 || true
+      if [ -n "$SCREENSHOT_DATA" ]; then
+        echo "Screenshot uploaded (${SCREENSHOT_SIZE} bytes)"
+      fi
+      if [ -n "$UI_HIERARCHY" ]; then
+        echo "UI hierarchy uploaded"
+      fi
     else
       echo "Screenshot+UI capture failed, will retry" >&2
     fi
@@ -212,7 +236,7 @@ ACTION_PID=""
     if [ -n "$HAS_ACTION" ]; then
       # Extract action fields using python for reliable JSON parsing
       python3 - "$CLOUDFLARE_WORKER_URL" << 'PYEOF'
-import json, sys, subprocess, urllib.request, urllib.error
+import json, sys, subprocess, urllib.request, urllib.error, base64, hashlib, time, os
 
 worker_url = sys.argv[1]
 
@@ -245,25 +269,26 @@ success = False
 error = None
 screenshot_b64 = None
 checksum = None
+ui_hierarchy_b64 = None
 
 try:
     if act_type == "tap":
-        x = params["x"] or 540
-        y = params["y"] or 1200
+        x = int(params["x"] or 540)
+        y = int(params["y"] or 1200)
         subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)], check=True, timeout=15000)
         success = True
     elif act_type == "swipe":
-        x = params["x"] or 540
-        y = params["y"] or 1500
-        x2 = params["x2"] or 540
-        y2 = params["y2"] or 500
-        ms = params["ms"] or 300
+        x = int(params["x"] or 540)
+        y = int(params["y"] or 1500)
+        x2 = int(params["x2"] or 540)
+        y2 = int(params["y2"] or 500)
+        ms = int(params["ms"] or 300)
         subprocess.run(["adb", "shell", "input", "swipe", str(x), str(y), str(x2), str(y2), str(ms)], check=True, timeout=15000)
         success = True
     elif act_type == "scroll":
-        x = params["x"] or 540
-        y1 = params["y"] or 1700
-        y2 = params["y2"] or 700
+        x = int(params["x"] or 540)
+        y1 = int(params["y"] or 1700)
+        y2 = int(params["y2"] or 700)
         subprocess.run(["adb", "shell", "input", "swipe", str(x), str(y1), str(x), str(y2), "300"], check=True, timeout=15000)
         success = True
     elif act_type == "type":
@@ -271,7 +296,7 @@ try:
         subprocess.run(["adb", "shell", "input", "text", text], check=True, timeout=15000)
         success = True
     elif act_type == "key":
-        keycode = params["keycode"] or 66
+        keycode = int(params["keycode"] or 66)
         subprocess.run(["adb", "shell", "input", "keyevent", str(keycode)], check=True, timeout=15000)
         success = True
     elif act_type == "back":
@@ -291,8 +316,7 @@ try:
         else:
             error = "No app specified for launch"
     elif act_type == "wait":
-        ms = params["ms"] or 2000
-        import time
+        ms = int(params["ms"] or 2000)
         time.sleep(min(10, ms / 1000.0))
         success = True
     elif act_type == "shell":
@@ -307,18 +331,16 @@ try:
 
     # Wait briefly for screen to settle after action
     if success and act_type in ("launch", "tap", "home", "back", "key"):
-        import time
         time.sleep(1.5)
 
-    # Capture screenshot + UI hierarchy after action — try multiple methods
-    # because `adb exec-out screencap -p` may return a 1x1 placeholder in headless CI
+    # --- Capture screenshot + UI hierarchy after action ---
     def capture_screenshot_and_ui():
-        import base64, hashlib, time
+        import base64, hashlib
         screenshot_b64 = None
         checksum = None
         ui_hierarchy_b64 = None
 
-        # --- Screenshot ---
+        # Screenshot — try multiple methods
         # Method 1: direct exec-out
         result = subprocess.run(["adb", "exec-out", "screencap", "-p"], capture_output=True, timeout=20000)
         if result.returncode == 0 and len(result.stdout) > 1000:
@@ -341,28 +363,20 @@ try:
                     screenshot_b64 = base64.b64encode(result3.stdout).decode("ascii")
                     checksum = hashlib.md5(result3.stdout).hexdigest()
 
-        # --- UI hierarchy via uiautomator dump ---
+        # UI hierarchy via uiautomator dump
         try:
             subprocess.run(["adb", "shell", "uiautomator", "dump", "/sdcard/vexa_ui.xml"], capture_output=True, timeout=10000)
-            time.sleep(0.5)
+            time.sleep(0.3)
+            if os.path.exists("/tmp/vexa_ui.xml"):
+                os.remove("/tmp/vexa_ui.xml")
             ui_result = subprocess.run(["adb", "pull", "/sdcard/vexa_ui.xml", "/tmp/vexa_ui.xml"], capture_output=True, timeout=10000)
-            if ui_result.returncode == 0:
-                import os
-                if os.path.exists("/tmp/vexa_ui.xml"):
-                    with open("/tmp/vexa_ui.xml", "rb") as f:
-                        ui_data = f.read()
-                    if len(ui_data) > 100:
-                        ui_hierarchy_b64 = base64.b64encode(ui_data).decode("ascii")
+            if ui_result.returncode == 0 and os.path.exists("/tmp/vexa_ui.xml"):
+                with open("/tmp/vexa_ui.xml", "rb") as f:
+                    ui_data = f.read()
+                if len(ui_data) > 100:
+                    ui_hierarchy_b64 = base64.b64encode(ui_data).decode("ascii")
         except Exception:
             pass
-        # Fallback: try dumpsys window windows
-        if not ui_hierarchy_b64:
-            try:
-                ds_result = subprocess.run(["adb", "shell", "dumpsys", "window", "windows"], capture_output=True, timeout=10000)
-                if ds_result.returncode == 0 and len(ds_result.stdout) > 100:
-                    ui_hierarchy_b64 = base64.b64encode(("DUMPSYS_WINDOWS:" + ds_result.stdout.decode("utf-8", errors="replace")).encode("utf-8")).decode("ascii")
-            except Exception:
-                pass
 
         return screenshot_b64, checksum, ui_hierarchy_b64
 
@@ -430,5 +444,9 @@ kill $SCREENSHOT_PID 2>/dev/null || true
 kill $ACTION_PID 2>/dev/null || true
 # Unregister emulator
 curl -s -X DELETE "${CLOUDFLARE_WORKER_URL}/api/emulator/session" > /dev/null 2>&1 || true
+# Stop Xvfb
+if [ -f /tmp/xvfb.pid ]; then
+  kill $(cat /tmp/xvfb.pid) 2>/dev/null || true
+fi
 adb emu kill 2>/dev/null || true
 echo "Emulator session ended."
