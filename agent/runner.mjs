@@ -193,13 +193,21 @@ function normalizeDecisionAction(decision, instructions) {
  */
 function verifyClaim(uiHierarchy, summary) {
   if (!uiHierarchy) return { checked: false, reason: 'no ui tree available' };
-  // Prefer the number that follows an '=' or 'equals', else the last number.
-  const nums = String(summary).replace(/,/g, '').match(/\d+(?:\.\d+)?/g) || [];
+  // Prefer the number that follows an '=' or ':', else the last number.
+  const claimText = String(summary).replace(/,/g, '');
+  const nums = claimText.match(/\d+(?:\.\d+)?/g) || [];
   if (!nums.length) return { checked: false, reason: 'no numeric result claimed' };
-  const afterEquals = String(summary).replace(/,/g, '').match(/=\s*(\d+(?:\.\d+)?)/);
+  const afterEquals = claimText.match(/[=:]\s*(\d+(?:\.\d+)?)/);
   const value = afterEquals ? afterEquals[1] : nums[nums.length - 1];
-  // A number shown on screen appears as element text such as text="10541".
-  const onScreen = new RegExp(`(^|[^\\d])${value.replace('.', '\\.')}([^\\d]|$)`).test(uiHierarchy);
+  // Compare against the element labels only. The formatted UI tree renders a
+  // calculator result as: - "10,541" tap(378,1360) bounds=[...]. The separators
+  // must be stripped and the tap/bounds numbers excluded, otherwise a correct
+  // result reads as unverified and a stray coordinate can match by accident.
+  const labels = (String(uiHierarchy).match(/"([^"]*)"/g) || [])
+    .map((q) => q.slice(1, -1))
+    .join(' ')
+    .replace(/,/g, '');
+  const onScreen = new RegExp(`(^|[^\\d])${value.replace('.', '\\.')}([^\\d]|$)`).test(labels);
   return { checked: true, value, verified: onScreen };
 }
 

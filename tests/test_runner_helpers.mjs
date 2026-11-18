@@ -88,6 +88,24 @@ test('verifyClaim rejects a result the agent invented', () => {
   assert.equal(r.verified, false);
 });
 
+test('verifyClaim matches a comma-formatted result (the real on-screen label)', () => {
+  // Regression: Android renders 10541 as "10,541". The claim had its commas
+  // stripped but the UI tree did not, so a correct result read as unverified
+  // and a good run was reported as failed.
+  const ui = 'package=com.android.calculator2 (2 labeled elements)\n- "10,541" tap(378,1360) bounds=[147,1223,609,1497]\n- "127 × 83" tap(378,300) bounds=[147,136,609,463]';
+  const r = verifyClaim(ui, 'The calculator shows 127 × 83 = 10,541.');
+  assert.equal(r.value, '10541');
+  assert.equal(r.verified, true);
+});
+
+test('verifyClaim does not match a number that only appears in coordinates', () => {
+  // The formatted tree carries tap()/bounds numbers; a claimed value must match
+  // an element label, never a coordinate that happens to equal it.
+  const ui = 'package=com.android.settings (1 labeled elements)\n- "Display" tap(540,10541) bounds=[0,0,1080,1080]';
+  const r = verifyClaim(ui, 'I set the value to 10541');
+  assert.equal(r.verified, false);
+});
+
 test('verifyClaim does not block a non-numeric completion', () => {
   assert.equal(verifyClaim('some tree', 'I opened the Settings app.').checked, false);
   assert.equal(verifyClaim(null, 'result 42').checked, false);
