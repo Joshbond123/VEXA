@@ -164,11 +164,21 @@ SCREENSHOT_PID=""
     fi
 
     # --- UI hierarchy capture via uiautomator dump ---
-    adb shell uiautomator dump /sdcard/vexa_ui.xml 2>/dev/null || true
-    sleep 0.3
-    UI_RAW=$(adb pull /sdcard/vexa_ui.xml - 2>/dev/null || true)
-    if [ -n "$UI_RAW" ] && [ $(echo -n "$UI_RAW" | wc -c) -gt 100 ]; then
-      UI_HIERARCHY=$(echo -n "$UI_RAW" | base64 -w 0 2>/dev/null || echo "")
+    adb shell uiautomator dump /sdcard/vexa_ui.xml 2>/tmp/uiauto_err.log || true
+    sleep 0.5
+    adb pull /sdcard/vexa_ui.xml /tmp/vexa_ui.xml 2>/dev/null || true
+    if [ -f /tmp/vexa_ui.xml ]; then
+      UI_SIZE=$(wc -c < /tmp/vexa_ui.xml 2>/dev/null || echo "0")
+      if [ "$UI_SIZE" -gt 100 ]; then
+        UI_HIERARCHY=$(base64 -w 0 /tmp/vexa_ui.xml 2>/dev/null || echo "")
+      fi
+    fi
+    # Fallback: try dumpsys window windows if uiautomator failed
+    if [ -z "$UI_HIERARCHY" ]; then
+      DUMPSYS_DATA=$(adb shell dumpsys window windows 2>/dev/null | head -100 || echo "")
+      if [ -n "$DUMPSYS_DATA" ] && [ $(echo -n "$DUMPSYS_DATA" | wc -c) -gt 100 ]; then
+        UI_HIERARCHY=$(echo -n "DUMPSYS_WINDOWS:$DUMPSYS_DATA" | base64 -w 0 2>/dev/null || echo "")
+      fi
     fi
 
     # Upload screenshot + UI hierarchy to Cloudflare Worker
@@ -334,12 +344,25 @@ try:
         # --- UI hierarchy via uiautomator dump ---
         try:
             subprocess.run(["adb", "shell", "uiautomator", "dump", "/sdcard/vexa_ui.xml"], capture_output=True, timeout=10000)
-            time.sleep(0.3)
-            ui_result = subprocess.run(["adb", "pull", "/sdcard/vexa_ui.xml", "-"], capture_output=True, timeout=10000)
-            if ui_result.returncode == 0 and len(ui_result.stdout) > 100:
-                ui_hierarchy_b64 = base64.b64encode(ui_result.stdout).decode("ascii")
+            time.sleep(0.5)
+            ui_result = subprocess.run(["adb", "pull", "/sdcard/vexa_ui.xml", "/tmp/vexa_ui.xml"], capture_output=True, timeout=10000)
+            if ui_result.returncode == 0:
+                import os
+                if os.path.exists("/tmp/vexa_ui.xml"):
+                    with open("/tmp/vexa_ui.xml", "rb") as f:
+                        ui_data = f.read()
+                    if len(ui_data) > 100:
+                        ui_hierarchy_b64 = base64.b64encode(ui_data).decode("ascii")
         except Exception:
             pass
+        # Fallback: try dumpsys window windows
+        if not ui_hierarchy_b64:
+            try:
+                ds_result = subprocess.run(["adb", "shell", "dumpsys", "window", "windows"], capture_output=True, timeout=10000)
+                if ds_result.returncode == 0 and len(ds_result.stdout) > 100:
+                    ui_hierarchy_b64 = base64.b64encode(("DUMPSYS_WINDOWS:" + ds_result.stdout.decode("utf-8", errors="replace")).encode("utf-8")).decode("ascii")
+            except Exception:
+                pass
 
         return screenshot_b64, checksum, ui_hierarchy_b64
 
