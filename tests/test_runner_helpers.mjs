@@ -9,7 +9,7 @@
  * Run: node tests/test_runner_helpers.mjs
  */
 import assert from 'node:assert/strict';
-import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText } from '../agent/runner.mjs';
+import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseCompletion } from '../agent/runner.mjs';
 
 let passed = 0;
 function test(name, fn) {
@@ -152,3 +152,27 @@ test('uiHierarchyToText returns null for junk input', () => {
 });
 
 console.log(`\n${passed} passed, 0 failed`);
+
+// ── parseCompletion: reasoning-model responses ──────────────────────────────
+// NVIDIA nemotron returns the JSON decision in `reasoning_content` with
+// `content: null`. Reading `content` alone made the reply empty and the agent
+// launched the Play Store instead of continuing the task.
+test('parseCompletion reads content when present', () => {
+  const json = { choices: [{ message: { content: '{"action":"tap","x":1,"y":2}' } }] };
+  assert.equal(parseCompletion(json), '{"action":"tap","x":1,"y":2}');
+});
+
+test('parseCompletion falls back to reasoning_content when content is null', () => {
+  const json = { choices: [{ message: { content: null, reasoning_content: '{"action":"launch","app":"Calculator"}' } }] };
+  assert.equal(parseCompletion(json), '{"action":"launch","app":"Calculator"}');
+});
+
+test('parseCompletion throws a clear error on an empty completion', () => {
+  const json = { choices: [{ message: { content: null }, finish_reason: 'length' }] };
+  assert.throws(() => parseCompletion(json, 'nvidia'), /empty completion/);
+});
+
+test('parseCompletion strips thinking tags before returning', () => {
+  const json = { choices: [{ message: { content: '<thinking>hmm</thinking>{"action":"home"}' } }] };
+  assert.equal(parseCompletion(json), '{"action":"home"}');
+});

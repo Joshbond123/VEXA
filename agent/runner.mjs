@@ -476,6 +476,20 @@ function stripReasoning(text) {
     .trim();
 }
 
+/* Pull the assistant text out of a chat-completions response. Reasoning models
+ * (e.g. NVIDIA nemotron) put the answer in `reasoning_content` and leave
+ * `content` null until the token budget is spent; reading `content` alone made
+ * the reply empty and the agent fell back to launching the Play Store. */
+function parseCompletion(json, label = 'provider') {
+  const message = json?.choices?.[0]?.message || {};
+  const fromContent = stripReasoning(message.content || '');
+  if (fromContent) return fromContent;
+  const fromReasoning = stripReasoning(message.reasoning_content || '');
+  if (fromReasoning) return fromReasoning;
+  const finish = json?.choices?.[0]?.finish_reason;
+  throw new Error(`${label}: empty completion (finish_reason=${finish})`);
+}
+
 function extractJson(text) {
   const cleaned = stripReasoning(text);
   const match = cleaned.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
@@ -489,7 +503,9 @@ async function callProvider(provider, messages, attempt = 1) {
     model: provider.model,
     messages,
     temperature: 0.2,
-    max_tokens: 512,
+    // Reasoning models spend tokens on hidden reasoning before the JSON reply,
+    // so 512 was often exhausted before a decision was emitted.
+    max_tokens: 2048,
     stream: false,
   };
   if (provider.id === 'grok') body.stream_options = { include_usage: true };
@@ -512,11 +528,14 @@ async function callProvider(provider, messages, attempt = 1) {
   }
 
   const json = await res.json();
-  const raw = (json.choices?.[0]?.message?.content || '');
-  return stripReasoning(raw);
+  return parseCompletion(json, provider.label);
 }
 
 async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHierarchy, deviceState, stuckHint }) {
+  const lastStep = history.length ? String(history[history.length - 1]) : '';
+  const rejectionSection = lastStep.startsWith('REJECTED done(')
+    ? `\nIMPORTANT: Your previous "done" was REJECTED. You claimed "${lastStep.slice(13)}" but that value is NOT on the screen. Do not repeat it. Keep interacting with the device until the correct result is actually visible, then report the value you can read on screen.\n`
+    : '';
   const stuckSection = stuckHint
     ? `\nWARNING: You appear stuck — the same action has been repeated ${LOOP_DETECT_THRESHOLD}+ times without screen change.\nTRY A DIFFERENT APPROACH:\n  • Use "launch" with package name (e.g. {"action":"launch","app":"com.android.vending"}) instead of tap\n  • Press "home" to reset to home screen, then try again\n  • Use "swipe" instead of "tap"\n  • Use "type" to search in the search bar\nDo NOT keep tapping the same coordinates.\n`
     : '';
@@ -533,7 +552,7 @@ async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHie
   // com.google.android.calculator, and a wrong package makes the agent retry
   // forever.
   const deviceResolution = (deviceState && deviceState.resolution) || '1080x1920';
-  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (${deviceResolution}).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nFor "launch", pass a human app name (e.g. "Calculator", "Settings", "Chrome") in "app"; the device resolves the correct package. Only use a package name if you already know it exists on this device.\n\nOpening an app: your FIRST action for any app the task needs is "launch" with the app name. Do not hunt for the icon on the home screen, open the app drawer, or use the search bar to open an app — launch it directly. Only use tap for elements inside an app that is already open.\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen. If the task asks for a number or value, read it from the current screen and put that exact value in "summary"; it is checked against the screen, and a wrong value fails the run.\nIf you are stuck, try a completely different approach — launch the app by name, swipe, or press home first.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
+  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (${deviceResolution}).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nFor "launch", pass a human app name (e.g. "Calculator", "Settings", "Chrome") in "app"; the device resolves the correct package. Only use a package name if you already know it exists on this device.\n\nOpening an app: your FIRST action for any app the task needs is "launch" with the app name. Do not hunt for the icon on the home screen, open the app drawer, or use the search bar to open an app — launch it directly. Only use tap for elements inside an app that is already open. To replace text already in a field (for example a stale calculator expression), send "type" with "clear": true, or tap the app\u2019s clear button first.\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen. If the task asks for a number or value, read it from the current screen and put that exact value in "summary"; it is checked against the screen, and a wrong value fails the run.\nIf you are stuck, try a completely different approach — launch the app by name, swipe, or press home first.\nNever include <thinking> or internal reasoning in your response.${rejectionSection}${stuckSection}`;
 
   const userContent = [
     { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1000)}${uiSection}` },
@@ -706,8 +725,16 @@ async function runAutomation(automation, emulator) {
           // live UI tree before believing it, and fail honestly when it is not
           // there.
           const claim = verifyClaim(uiHierarchy, decision.summary || decision.thought || '');
+          const summaryText = decision.summary || decision.thought || 'Task completed.';
+          // A "done" whose claimed result is not on screen is not done. Push the
+          // contradiction back so the model keeps working instead of ending the
+          // run on a fabricated number; only fail once the step budget is gone.
+          if (claim.checked && !claim.verified && step < MAX_STEPS - 1) {
+            actionsPerformed.push(`REJECTED done(${claim.value}) — value not on screen; continuing`);
+            continue;
+          }
           outcomeAchieved = Boolean(decision.outcomeAchieved === true);
-          observedResults = decision.summary || decision.thought || 'Task completed.';
+          observedResults = summaryText;
           aiNextMinutes = decision.nextRunMinutes ?? null;
           if (outcomeAchieved && claim.checked && !claim.verified) {
             outcomeAchieved = false;
@@ -1004,7 +1031,7 @@ async function main() {
 }
 
 // Exported for unit tests; importing this module must not start the agent loop.
-export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseUiXml };
+export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseUiXml, parseCompletion };
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
