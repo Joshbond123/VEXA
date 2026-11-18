@@ -242,17 +242,17 @@ ACTION_PID=""
     HAS_ACTION=$(echo "$ACTION_RESPONSE" | grep -o '"action":{' || echo "")
 
     if [ -n "$HAS_ACTION" ]; then
-      # Extract action fields using python for reliable JSON parsing.
-      # The action JSON is piped in from the curl above: an urllib GET here
-      # would be stalled by Cloudflare's bot protection.
-      printf '%s' "$ACTION_RESPONSE" | python3 - "$CLOUDFLARE_WORKER_URL" << 'PYEOF'
+      # Hand the action to the executor through a file: `python3 - << HEREDOC`
+      # already consumes stdin for the program, so the JSON cannot be piped in.
+      printf '%s' "$ACTION_RESPONSE" > /tmp/vexa_action.json
+      python3 - "$CLOUDFLARE_WORKER_URL" /tmp/vexa_action.json << 'PYEOF'
 import json, sys, subprocess, base64, hashlib, time, os
 
 worker_url = sys.argv[1]
 
-# Read the pending action passed on stdin
 try:
-    data = json.loads(sys.stdin.read() or "{}")
+    with open(sys.argv[2]) as fh:
+        data = json.load(fh)
 except Exception as e:
     print(f"Failed to parse pending action: {e}")
     sys.exit(1)

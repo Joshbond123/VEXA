@@ -272,7 +272,7 @@ async function deviceAction(gatewayUrl, action, params = {}) {
 /* Wait until the emulator has executed the queued action and reported a result.
  * Resolves as soon as lastActionResult is no longer 'pending'; on timeout it
  * resolves anyway so a slow frame never blocks the whole task. */
-async function waitForActionCompletion(gatewayUrl, timeoutMs = 15000) {
+async function waitForActionCompletion(gatewayUrl, timeoutMs = 60000) {
   if (!gatewayUrl) return false;
   const url = `${gatewayUrl.replace(/\/+$/, '')}/api/public/device-state`;
   const deadline = Date.now() + timeoutMs;
