@@ -332,7 +332,7 @@ async function askAgentBrain({ task, history, stepIndex, screenshotBase64, uiHie
     ? `\n\nUI HIERARCHY (from uiautomator dump):\n${uiHierarchy.slice(0, 6000)}\n\nUse the UI hierarchy above to identify clickable elements, their text labels, and approximate coordinates. The hierarchy contains <node> elements with attributes like text, content-desc, clickable, bounds (in [x1,y1,x2,y2] format). Focus on buttons, text fields, and interactive elements relevant to your task.\n`
     : '';
 
-  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach — launch the app by package name, swipe, or press home first.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
+  const systemPrompt = `You are VEXA, an autonomous AI agent operating a real Android phone (1080x2400).\nInspect the current screen and device state, then decide the SINGLE next action to accomplish the user's task.\nRespond ONLY with valid JSON, no markdown fences, no reasoning tags:\n{\n  "thought": "brief reasoning about what you see on screen",\n  "action": "tap|swipe|scroll|type|key|back|home|launch|wait|done|fail",\n  "x": 540, "y": 1200, "x2": 540, "y2": 400,\n  "text": "text to type or package name to launch",\n  "keycode": 66,\n  "ms": 2000,\n  "app": "App Name",\n  "summary": "final summary if done/fail",\n  "outcomeAchieved": true,\n  "nextRunMinutes": null\n}\nCommon Android package names:\n  • Calculator: com.google.android.calculator\n  • Settings: com.android.settings\n  • Play Store: com.android.vending\n  • Chrome: com.android.chrome\n  • Camera: com.android.camera\n\nA task is complete ONLY when you have verified the result on screen. Never claim success without observing the screen.\nIf you are stuck, try a completely different approach — launch the app by package name, swipe, or press home first.\nFor Calculator Math Task: launch com.google.android.calculator, then tap number buttons and operation buttons.\nNever include <thinking> or internal reasoning in your response.${stuckSection}`;
 
   const userContent = [
     { type: 'text', text: `Task: ${task}\nStep: ${stepIndex + 1}\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n') || 'None'}\n\nDevice state: ${JSON.stringify(deviceState || {}).slice(0, 1000)}${uiSection}` },
@@ -499,10 +499,15 @@ async function runAutomation(automation, emulator) {
                   decision.y = coords[1];
                 }
               } else if (parsedAction === 'launch') {
-                console.warn(`Normalizing malformed action "${decision.action}" → launch(${parsedArgs})`);
+                const targetPkg = parsedArgs.trim();
+                // Replace "undefined" or empty with proper Calculator package name
+                const pkg = targetPkg === 'undefined' || !targetPkg
+                  ? 'com.google.android.calculator'
+                  : targetPkg;
+                console.warn(`Normalizing malformed action "${decision.action}" → launch(${pkg})`);
                 decision.action = parsedAction;
-                decision.text = parsedArgs.trim();
-                decision.app = parsedArgs.trim();
+                decision.text = pkg;
+                decision.app = pkg;
               }
             }
           }
