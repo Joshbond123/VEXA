@@ -502,8 +502,9 @@ async function runAutomation(automation, emulator) {
                 }
               } else if (parsedAction === 'launch') {
                 const targetPkg = parsedArgs.trim();
-                // Replace "undefined", "undefined,undefined", or empty with proper Calculator package name
-                const pkg = (targetPkg === 'undefined' || targetPkg === 'undefined,undefined' || !targetPkg)
+                // Reject coordinate-like args (e.g. "0,0", "540,1200") and "undefined" variants
+                const looksLikeCoords = /^\d+,\d+$/.test(targetPkg);
+                const pkg = (looksLikeCoords || targetPkg === 'undefined' || targetPkg === 'undefined,undefined' || !targetPkg)
                   ? 'com.google.android.calculator'
                   : targetPkg;
                 console.warn(`Normalizing malformed action "${decision.action}" → launch(${pkg})`);
@@ -513,6 +514,12 @@ async function runAutomation(automation, emulator) {
               }
             }
           }
+        }
+
+        // Safety check: ensure launch actions have a valid package name
+        if (decision.action === 'launch' && (!decision.text || !decision.text.includes('.'))) {
+          decision.text = 'com.google.android.calculator';
+          decision.app = 'com.google.android.calculator';
         }
 
         if (decision.action === 'done') {
