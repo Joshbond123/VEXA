@@ -19,6 +19,16 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dns from 'node:dns';
+
+// GitHub's ubuntu runners resolve the Cloudflare Worker host to both A and AAAA
+// records but have no IPv6 egress. Node's fetch then tries the IPv6 address
+// first, fails to connect, and throws the opaque "fetch failed" — which the
+// runner reported as "Android emulator gateway is offline" even though the
+// emulator was live. Prefer IPv4 so the request takes the route that works.
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
 
 const REPO_ROOT = process.cwd();
 const DATA_DIR = path.join(REPO_ROOT, 'data');
