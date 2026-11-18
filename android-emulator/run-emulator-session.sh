@@ -319,13 +319,50 @@ try:
     elif act_type == "launch":
         app = params["app"] or params["text"]
         if app:
-            subprocess.run(["adb", "shell", "monkey", "-p", str(app), "-c", "android.intent.category.LAUNCHER", "1"], check=True, timeout=30)
-            success = True
+            name = str(app).strip()
+            # Accept a human name as well as a package: `monkey` exits 252 when
+            # the package has no launcher entry or the name is wrong, which is
+            # what made 'launch Calculator' fail on an image whose calculator
+            # is com.android.calculator2, not com.google.android.calculator.
+            aliases = {
+                "calculator": "com.android.calculator2",
+                "settings": "com.android.settings",
+                "chrome": "com.android.chrome",
+                "camera": "com.android.camera2",
+                "phone": "com.android.dialer",
+                "messages": "com.android.messaging",
+                "play store": "com.android.vending",
+                "browser": "com.android.browser",
+            }
+            pkg = aliases.get(name.lower(), name)
+
+            launched = False
+            # Resolve the package's launcher activity and start it explicitly.
+            try:
+                r = subprocess.run(
+                    ["adb", "shell", "cmd", "package", "resolve-activity", "--brief",
+                     "-c", "android.intent.category.LAUNCHER", pkg],
+                    capture_output=True, timeout=30,
+                )
+                comp = r.stdout.decode("utf-8", "replace").strip().splitlines()[-1] if r.stdout.strip() else ""
+                if r.returncode == 0 and "/" in comp:
+                    subprocess.run(["adb", "shell", "am", "start", "-n", comp], check=True, timeout=30)
+                    launched = True
+            except Exception:
+                pass
+            if not launched:
+                m = subprocess.run(
+                    ["adb", "shell", "monkey", "-p", pkg,
+                     "-c", "android.intent.category.LAUNCHER", "1"],
+                    capture_output=True, timeout=30,
+                )
+                launched = m.returncode == 0
+            if launched:
+                success = True
+            else:
+                error = f"Could not launch '{name}' (package {pkg}); it may not be installed"
         else:
             error = "No app specified for launch"
-    elif act_type == "recents":
-        subprocess.run(["adb", "shell", "input", "keyevent", "187"], check=True, timeout=30)
-        success = True
     elif act_type == "screenshot":
         # No device interaction: the capture step below refreshes the frame.
         success = True
