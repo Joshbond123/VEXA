@@ -229,7 +229,12 @@ export async function upsertDeviceState(db, state) {
       merged.lastAction,
       merged.lastActionResult,
       merged.uiHierarchy,
-      new Date().toISOString(),
+      // updated_at tracks frame freshness, so it only advances when a new frame
+      // (or UI tree) actually arrives. Queueing an action must not make a stale
+      // screenshot look fresh.
+      has('lastScreenshotUrl') || has('uiHierarchy') || has('screenChecksum')
+        ? new Date().toISOString()
+        : (current.updatedAt ?? new Date().toISOString()),
       'current'
     ).run();
   } else {

@@ -307,5 +307,68 @@ await test('reasoning models are accepted when content is empty', async () => {
   }
 });
 
+await test('a queued action is returned to the emulator by pending-action', async () => {
+  // Regression: pending-action read state.last_action while getDeviceState
+  // returns camelCase, so the emulator was handed null for every action and
+  // the phone never moved.
+  const db = createDb();
+  const env = { DB: db, SESSION_KV: createKv(), CONFIG_KV: createKv() };
+
+  await handleEmulator(
+    req('/api/emulator/action', 'POST', { action: 'swipe', x: 540, y: 1600, x2: 540, y2: 400, ms: 250 }),
+    env, {}, null, corsHeaders,
+  );
+
+  const res = await handleEmulator(req('/api/emulator/pending-action', 'GET'), env, {}, null, corsHeaders);
+  const data = await res.json();
+  assert.ok(data.action, 'the emulator must receive the queued action');
+  assert.equal(data.action.action, 'swipe');
+  assert.equal(data.action.y2, 400);
+});
+
+await test('pending-action returns null once the result has been reported', async () => {
+  const db = createDb();
+  const env = { DB: db, SESSION_KV: createKv(), CONFIG_KV: createKv() };
+  await handleEmulator(req('/api/emulator/action', 'POST', { action: 'home' }), env, {}, null, corsHeaders);
+  await handleEmulator(
+    req('/api/emulator/action-result', 'POST', { action: 'home', success: true }),
+    env, {}, null, corsHeaders,
+  );
+  const res = await handleEmulator(req('/api/emulator/pending-action', 'GET'), env, {}, null, corsHeaders);
+  assert.equal((await res.json()).action, null);
+});
+
+await test('action-result without a screenshot preserves the previous frame', async () => {
+  const db = createDb();
+  const env = { DB: db, SESSION_KV: createKv(), CONFIG_KV: createKv() };
+  await handleEmulator(
+    req('/api/emulator/screenshot', 'POST', { screenshotBase64: 'KEEPME', uiHierarchy: '<hierarchy/>' }),
+    env, {}, null, corsHeaders,
+  );
+  await handleEmulator(req('/api/emulator/action', 'POST', { action: 'tap', x: 1, y: 2 }), env, {}, null, corsHeaders);
+  await handleEmulator(
+    req('/api/emulator/action-result', 'POST', { action: 'tap', success: true }),
+    env, {}, null, corsHeaders,
+  );
+  const state = await (await handleEmulator(req('/api/public/device-state', 'GET'), env, {}, null, corsHeaders)).json();
+  assert.match(state.screenshotUrl, /KEEPME$/, 'the frame must survive a screenshot-less result');
+  assert.equal(state.uiHierarchy, '<hierarchy/>');
+});
+
+await test('public device-state exposes camelCase fields the agent reads', async () => {
+  // Regression: this handler returned snake_case keys that were always
+  // undefined, so the agent runner received a null UI tree.
+  const db = createDb();
+  const env = { DB: db, SESSION_KV: createKv(), CONFIG_KV: createKv() };
+  await handleEmulator(
+    req('/api/emulator/screenshot', 'POST', { screenshotBase64: 'AAAA', uiHierarchy: '<hierarchy><node text="Calculator"/></hierarchy>' }),
+    env, {}, null, corsHeaders,
+  );
+  const data = await (await handleEmulator(req('/api/public/device-state', 'GET'), env, {}, null, corsHeaders)).json();
+  assert.ok(data.screenshotUrl, 'screenshotUrl must be populated');
+  assert.match(data.uiHierarchy, /Calculator/);
+  assert.ok(data.updatedAt, 'updatedAt must be populated');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

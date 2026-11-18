@@ -302,6 +302,12 @@ try:
             success = True
         else:
             error = "No app specified for launch"
+    elif act_type == "recents":
+        subprocess.run(["adb", "shell", "input", "keyevent", "187"], check=True, timeout=15000)
+        success = True
+    elif act_type == "screenshot":
+        # No device interaction: the capture step below refreshes the frame.
+        success = True
     elif act_type == "wait":
         ms = int(params["ms"] or 2000)
         time.sleep(min(10, ms / 1000.0))

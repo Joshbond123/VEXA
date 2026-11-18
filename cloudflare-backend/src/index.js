@@ -154,10 +154,10 @@ export default {
           }
           return Response.json({
             ok: true,
-            screenshotUrl: state.last_screenshot_url || null,
-            uiHierarchy: state.ui_hierarchy || null,
-            lastActionResult: state.last_action_result || null,
-            updatedAt: state.updated_at || null,
+            screenshotUrl: state.lastScreenshotUrl || null,
+            uiHierarchy: state.uiHierarchy || null,
+            lastActionResult: state.lastActionResult || null,
+            updatedAt: state.updatedAt || null,
           }, { headers: corsHeaders() });
         } catch (err) {
           return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });

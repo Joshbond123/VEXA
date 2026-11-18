@@ -164,11 +164,11 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   if (path === '/api/emulator/pending-action' && method === 'GET') {
     try {
       const state = await getDeviceState(env.DB);
-      if (!state || !state.last_action || state.last_action_result !== 'pending') {
+      if (!state || !state.lastAction || state.lastActionResult !== 'pending') {
         return Response.json({ ok: true, action: null }, { headers: corsHeaders() });
       }
 
-      const action = JSON.parse(state.last_action);
+      const action = JSON.parse(state.lastAction);
       return Response.json({ ok: true, action }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
@@ -181,14 +181,17 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
       const body = await request.json();
       const { action, success, error, screenshotBase64, checksum, uiHierarchy } = body;
 
-      // Clear the pending action and record the result
-      await upsertDeviceState(env.DB, {
-        screenChecksum: checksum || null,
-        lastScreenshotUrl: screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null,
-        uiHierarchy: uiHierarchy || null,
+      // Record the result. Screenshot/UI-tree fields are only included when the
+      // emulator actually captured them: upsertDeviceState merges, so omitting a
+      // field preserves the previous frame instead of blanking the preview.
+      const patch = {
         lastAction: null,
         lastActionResult: JSON.stringify({ action, success, error, timestamp: new Date().toISOString() }),
-      });
+      };
+      if (screenshotBase64) patch.lastScreenshotUrl = `data:image/png;base64,${screenshotBase64}`;
+      if (checksum) patch.screenChecksum = checksum;
+      if (uiHierarchy) patch.uiHierarchy = uiHierarchy;
+      await upsertDeviceState(env.DB, patch);
 
       return Response.json({ ok: true, message: 'Action result recorded' }, { headers: corsHeaders() });
     } catch (err) {
@@ -199,10 +202,10 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   // GET /api/emulator/screenshot - get latest screenshot (JSON with URL)
   if (path === '/api/emulator/screenshot' && method === 'GET') {
     const state = await getDeviceState(env.DB);
-    if (!state || !state.last_screenshot_url) {
+    if (!state || !state.lastScreenshotUrl) {
       return Response.json({ error: 'No screenshot available' }, { status: 404, headers: corsHeaders() });
     }
-    return Response.json({ ok: true, screenshotUrl: state.last_screenshot_url }, { headers: corsHeaders() });
+    return Response.json({ ok: true, screenshotUrl: state.lastScreenshotUrl }, { headers: corsHeaders() });
   }
 
   // POST /api/emulator/screenshot - upload screenshot from emulator
@@ -232,10 +235,10 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
     }
     return Response.json({
       ok: true,
-      screenshotUrl: state.last_screenshot_url || null,
-      uiHierarchy: state.ui_hierarchy || null,
-      lastActionResult: state.last_action_result || null,
-      updatedAt: state.updated_at || null,
+      screenshotUrl: state.lastScreenshotUrl || null,
+      uiHierarchy: state.uiHierarchy || null,
+      lastActionResult: state.lastActionResult || null,
+      updatedAt: state.updatedAt || null,
     }, { headers: corsHeaders() });
   }
 
