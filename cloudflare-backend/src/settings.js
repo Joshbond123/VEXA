@@ -4,6 +4,8 @@
  * Uses KV for storage (reliable, no D1 bind issues)
  */
 
+import { getSettings, upsertSettings } from './database.js';
+
 export async function handleSettings(request, env, ctx, token, corsHeaders) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -12,7 +14,12 @@ export async function handleSettings(request, env, ctx, token, corsHeaders) {
   // GET /api/settings - get all settings
   if (path === '/api/settings' && method === 'GET') {
     try {
-      const kvConfig = await env.CONFIG_KV.get('settings_config');
+      // D1 is the source of truth: the agent runner reads the same table via
+      // getSettings(env.DB). KV is kept only as a fallback; its daily write
+      // limit made the Settings page fail to save at all.
+      const dbConfig = env.DB && typeof env.DB.prepare === 'function'
+        ? await getSettings(env.DB).catch(() => null) : null;
+      const kvConfig = dbConfig ? JSON.stringify(dbConfig) : await env.CONFIG_KV.get('settings_config');
       
       if (!kvConfig) {
         return Response.json({ 
@@ -50,20 +57,33 @@ export async function handleSettings(request, env, ctx, token, corsHeaders) {
   if (path === '/api/settings' && method === 'POST') {
     try {
       const body = await request.json();
-      
-      // Save to KV
-      await env.CONFIG_KV.put('settings_config', JSON.stringify({
-        gatewayUrl: body.gatewayUrl || '',
-        provider: body.provider || 'nvidia',
-        model: body.model || 'nemotron-3.5-super-vl-120b-a12b',
+
+      // Merge onto the stored config so a secret the client did not resend is
+      // preserved. The frontend only sends a key when the user retypes it, so
+      // writing straight from the body blanked the API key and GitHub PAT on
+      // every unrelated save, after which the agent failed with "No API key".
+      const existing = (env.DB && typeof env.DB.prepare === 'function' ? await getSettings(env.DB).catch(() => null) : null)
+        || JSON.parse((await env.CONFIG_KV.get('settings_config')) || '{}');
+
+      const merged = {
+        gatewayUrl: body.gatewayUrl ?? existing.gatewayUrl ?? '',
+        provider: body.provider ?? existing.provider ?? 'nvidia',
+        model: body.model ?? existing.model ?? 'nemotron-3.5-super-vl-120b-a12b',
         // The frontend posts `apiKeys` (one per line); older clients used `apiKey`.
-        apiKeyEncrypted: body.apiKeys || body.apiKey || '',
-        githubPatEncrypted: body.githubPat || '',
-        githubRepo: body.githubRepo || '',
-        cloudflareAccountId: body.cloudflareAccountId || '',
-        cloudflareApiTokenEncrypted: body.cloudflareApiToken || '',
-        keyRotation: body.keyRotation !== false,
-      }), { expirationTtl: 86400 * 30 });
+        apiKeyEncrypted: body.apiKeys || body.apiKey || existing.apiKeyEncrypted || '',
+        githubPatEncrypted: body.githubPat || existing.githubPatEncrypted || '',
+        githubRepo: body.githubRepo ?? existing.githubRepo ?? '',
+        cloudflareAccountId: body.cloudflareAccountId ?? existing.cloudflareAccountId ?? '',
+        cloudflareApiTokenEncrypted: body.cloudflareApiToken || existing.cloudflareApiTokenEncrypted || '',
+        keyRotation: body.keyRotation ?? existing.keyRotation ?? true,
+      };
+      if (env.DB && typeof env.DB.prepare === 'function') await upsertSettings(env.DB, merged);
+      // Best-effort KV mirror; a save still succeeds on D1 when KV is full.
+      try {
+        await env.CONFIG_KV.put('settings_config', JSON.stringify(merged), { expirationTtl: 86400 * 30 });
+      } catch (kvErr) {
+        console.warn(`KV mirror skipped: ${kvErr.message}`);
+      }
 
       return Response.json({ ok: true, message: 'Settings saved successfully' }, { headers: corsHeaders() });
     } catch (err) {

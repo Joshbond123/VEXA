@@ -101,3 +101,58 @@ await test('saving a non-secret field preserves the stored GitHub PAT', async ()
 });
 
 console.log(`\n${passed} passed, 0 failed`);
+
+// ── D1 path (the live store) ────────────────────────────────────────────────
+// The agent runner reads settings from D1 via getSettings(env.DB), and KV has a
+// daily write cap, so D1 must be the store that settings POST writes and GET
+// reads. A minimal D1 stand-in exercises the real SQL against an in-memory row.
+function createD1() {
+  const row = {};
+  const map = { gateway_url: 'gatewayUrl', provider: 'provider', model: 'model',
+    api_key_encrypted: 'apiKeyEncrypted', github_pat_encrypted: 'githubPatEncrypted',
+    github_repo: 'githubRepo', cloudflare_account_id: 'cloudflareAccountId',
+    cloudflare_api_token_encrypted: 'cloudflareApiTokenEncrypted', key_rotation: 'keyRotation' };
+  const db = {
+    prepare(sql) {
+      const stmt = { _args: [], bind(...a) { this._args = a; return this; },
+        async first() { return Object.keys(row).length ? { id: 'default', ...row } : null; },
+        async run() {
+          if (sql.startsWith('INSERT')) {
+            const cols = ['gatewayUrl','provider','model','apiKeyEncrypted','githubPatEncrypted',
+              'githubRepo','cloudflareAccountId','cloudflareApiTokenEncrypted','keyRotation'];
+            cols.forEach((c, i) => { row[c] = this._args[i + 1]; });
+          } else if (sql.startsWith('UPDATE')) {
+            const cols = ['gatewayUrl','provider','model','apiKeyEncrypted','githubPatEncrypted',
+              'githubRepo','cloudflareAccountId','cloudflareApiTokenEncrypted','keyRotation'];
+            cols.forEach((c, i) => { row[c] = this._args[i]; });
+          }
+          return { success: true };
+        } };
+      return stmt;
+    },
+    async exec() {},
+  };
+  return db;
+}
+
+await test('D1: saving a non-secret field preserves the stored API key', async () => {
+  const env = { CONFIG_KV: createKv(), DB: createD1() };
+  await handleFrontend(post({ apiKeys: 'nvapi-keep-me', githubRepo: 'a/b' }), env, {}, null, corsHeaders);
+  await handleFrontend(post({ githubRepo: 'Joshbond123/VEXA' }), env, {}, null, corsHeaders);
+  const res = await handleFrontend(get(), env, {}, null, corsHeaders);
+  const data = await res.json();
+  assert.equal(data.settings.hasApiKey, true, 'the API key must survive a repo-only save on D1');
+  assert.equal(data.settings.githubRepo, 'Joshbond123/VEXA', 'the new repo must be stored');
+});
+
+await test('D1: GET reads settings the agent runner would read', async () => {
+  const env = { CONFIG_KV: createKv(), DB: createD1() };
+  await handleFrontend(post({ provider: 'xai', apiKeys: 'xai-key', model: 'grok' }), env, {}, null, corsHeaders);
+  const res = await handleFrontend(get(), env, {}, null, corsHeaders);
+  const data = await res.json();
+  assert.equal(data.settings.provider, 'xai');
+  assert.equal(data.settings.model, 'grok');
+  assert.equal(data.settings.hasApiKey, true);
+});
+
+console.log(`\n${passed} passed, 0 failed`);

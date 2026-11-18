@@ -7,30 +7,47 @@ import {
   getAutomations, getAutomation, upsertAutomation,
   getChats, saveChatMessage,
   getEmulatorSession, getDeviceState, upsertDeviceState,
+  getSettings, upsertSettings,
 } from './database.js';
 
 const REPO = 'Joshbond123/VEXA';
 const DEFAULT_WORKER_URL = 'https://vexa-ai-agent.replyraven001.workers.dev';
 
+/** Read settings from D1 (source of truth), falling back to KV. */
+async function readSettings(env) {
+  if (env.DB && typeof env.DB.prepare === 'function') {
+    try {
+      const dbCfg = await getSettings(env.DB);
+      if (dbCfg) return dbCfg;
+    } catch { /* fall through to KV */ }
+  }
+  try {
+    const raw = await env.CONFIG_KV.get('settings_config');
+    if (raw) return JSON.parse(raw);
+  } catch { /* no settings stored yet */ }
+  return {};
+}
+
+/** Write settings to D1 and mirror to KV best-effort (KV has a daily write cap). */
+async function writeSettings(env, settings) {
+  if (env.DB && typeof env.DB.prepare === 'function') await upsertSettings(env.DB, settings);
+  try {
+    await env.CONFIG_KV.put('settings_config', JSON.stringify(settings), { expirationTtl: 86400 * 30 });
+  } catch (kvErr) {
+    console.warn(`KV mirror skipped: ${kvErr.message}`);
+  }
+}
+
 /** Read the GitHub PAT from settings or the Worker secret. */
 async function resolveGitHubPat(env) {
-  try {
-    const cfg = await env.CONFIG_KV.get('settings_config');
-    if (cfg) {
-      const parsed = JSON.parse(cfg);
-      if (parsed.githubPatEncrypted) return parsed.githubPatEncrypted;
-    }
-  } catch { /* fall through to the Worker secret */ }
+  const cfg = await readSettings(env);
+  if (cfg.githubPatEncrypted) return cfg.githubPatEncrypted;
   return env.GITHUB_PAT || '';
 }
 
 /** Read the AI provider keys (one per line) and primary provider from settings. */
 async function resolveProviderConfig(env) {
-  let cfg = {};
-  try {
-    const raw = await env.CONFIG_KV.get('settings_config');
-    if (raw) cfg = JSON.parse(raw);
-  } catch { /* ignore */ }
+  const cfg = await readSettings(env);
   const keys = String(cfg.apiKeyEncrypted || '').split(/[\n,]/).map((k) => k.trim()).filter(Boolean);
   return { provider: cfg.provider || 'nvidia', model: cfg.model || '', keys };
 }
@@ -404,11 +421,10 @@ Only include the ACTION line when you are actually taking a step on the device. 
   // GET /api/frontend/settings - get settings
   if (path === '/api/frontend/settings' && method === 'GET') {
     try {
-      const kvConfig = await env.CONFIG_KV.get('settings_config');
-      if (!kvConfig) {
+      const config = await readSettings(env);
+      if (!config || Object.keys(config).length === 0) {
         return Response.json({ ok: true, settings: {} }, { headers: corsHeaders() });
       }
-      const config = JSON.parse(kvConfig);
       const safeSettings = {
         gatewayUrl: config.gatewayUrl || '',
         provider: config.provider || 'nvidia',
@@ -416,7 +432,12 @@ Only include the ACTION line when you are actually taking a step on the device. 
         keyRotation: config.keyRotation !== false,
         hasApiKey: !!config.apiKeyEncrypted,
         hasGitHubPat: !!config.githubPatEncrypted,
+        // githubRepo and hasCloudflareToken are returned so the Settings form
+        // can repopulate the repo field and show that a Cloudflare token is
+        // stored. They were missing, so the form always looked empty.
+        githubRepo: config.githubRepo || '',
         cloudflareAccountId: config.cloudflareAccountId || '',
+        hasCloudflareToken: !!config.cloudflareApiTokenEncrypted,
       };
       return Response.json({ ok: true, settings: safeSettings }, { headers: corsHeaders() });
     } catch (err) {
@@ -432,11 +453,7 @@ Only include the ACTION line when you are actually taking a step on the device. 
       // it. Overwriting with '' here silently deleted the API key whenever the
       // operator saved an unrelated field (e.g. the repo name), which then
       // broke the agent with "No API key configured".
-      let prev = {};
-      try {
-        const raw = await env.CONFIG_KV.get('settings_config');
-        if (raw) prev = JSON.parse(raw);
-      } catch { /* start from an empty config */ }
+      const prev = await readSettings(env);
 
       const settings = {
         gatewayUrl: body.gatewayUrl ?? prev.gatewayUrl ?? '',
@@ -450,7 +467,7 @@ Only include the ACTION line when you are actually taking a step on the device. 
         cloudflareApiTokenEncrypted: body.cloudflareApiToken || prev.cloudflareApiTokenEncrypted || '',
         keyRotation: body.keyRotation !== undefined ? body.keyRotation !== false : prev.keyRotation !== false,
       };
-      await env.CONFIG_KV.put('settings_config', JSON.stringify(settings), { expirationTtl: 86400 * 30 });
+      await writeSettings(env, settings);
 
       return Response.json({ ok: true, message: 'Settings saved' }, { headers: corsHeaders() });
     } catch (err) {
