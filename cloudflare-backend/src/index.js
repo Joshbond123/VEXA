@@ -1,6 +1,6 @@
 /**
  * VEXA AI Agent — Cloudflare Workers Backend
- * 
+ *
  * Main entry point for the VEXA platform backend.
  * Routes requests to appropriate handlers for:
  * - Frontend (GitHub Pages) API
@@ -15,7 +15,7 @@ import { handleAgent } from './agent.js';
 import { handleFrontend } from './frontend.js';
 import { handleSettings } from './settings.js';
 import { EmulatorSession } from './durable-objects.js';
-import { initDatabase } from './database.js';
+import { initDatabase, getDeviceState } from './database.js';
 
 export { EmulatorSession };
 
@@ -60,7 +60,7 @@ async function verifyAccessToken(token, env) {
   // Check against stored tokens in KV or env
   const stored = await env.CONFIG_KV.get(`access_token:${token}`);
   if (stored) return JSON.parse(stored);
-  
+
   // Fallback to env var
   if (token === env.EMULATOR_ACCESS_TOKEN) {
     return { type: 'emulator', token };
@@ -94,7 +94,42 @@ export default {
 
     // Auth middleware for protected routes
     const token = getBearerToken(request);
-    
+
+    // === Public endpoints for agent runner (mobilerun-compatible) ===
+    if (path.startsWith('/api/public')) {
+      // GET /api/public/health - public health check
+      if (path === '/api/public/health' && method === 'GET') {
+        return Response.json({
+          ok: true,
+          service: 'vexa-ai-agent-public',
+          timestamp: new Date().toISOString(),
+        }, { headers: corsHeaders() });
+      }
+
+      // GET /api/public/screenshot - get latest screenshot
+      if (path === '/api/public/screenshot' && method === 'GET') {
+        try {
+          const state = await getDeviceState(env.DB);
+          if (!state || !state.lastScreenshotUrl) {
+            return Response.json({ error: 'No screenshot available' }, { status: 404, headers: corsHeaders() });
+          }
+          return Response.json({
+            ok: true,
+            screenshotUrl: state.lastScreenshotUrl,
+          }, { headers: corsHeaders() });
+        } catch (err) {
+          return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+        }
+      }
+
+      return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
+    }
+
+    // POST /api/agent/action - agent runner RPC endpoint
+    if (path === '/api/agent/action' && method === 'POST') {
+      return handleEmulator(request, env, ctx, token, corsHeaders);
+    }
+
     // === Emulator Routes ===
     if (path.startsWith('/api/emulator')) {
       return handleEmulator(request, env, ctx, token, corsHeaders);
@@ -127,28 +162,6 @@ export default {
       return stub.fetch(request);
     }
 
-    // Test D1 insert
-    if (path === '/api/test-d1' && method === 'POST') {
-      try {
-        await env.DB.prepare(`INSERT INTO settings (id, gateway_url, provider, model, api_key_encrypted, github_pat_encrypted, github_repo, cloudflare_account_id, cloudflare_api_token_encrypted, key_rotation, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-          'test_default',
-          'https://test.com',
-          'nvidia',
-          'nemotron',
-          '',
-          '',
-          '',
-          '',
-          '',
-          1,
-          new Date().toISOString()
-        ).run();
-        return Response.json({ ok: true }, { headers: corsHeaders() });
-      } catch (err) {
-        return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
-      }
-    }
-
     // Root API info
     if (path === '/api' || path === '/') {
       return Response.json({
@@ -156,6 +169,9 @@ export default {
         version: '2.0.0',
         endpoints: {
           health: '/api/health',
+          publicHealth: '/api/public/health',
+          publicScreenshot: '/api/public/screenshot',
+          agentAction: '/api/agent/action',
           auth: '/api/auth/*',
           emulator: '/api/emulator/*',
           agent: '/api/agent/*',
