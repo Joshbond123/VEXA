@@ -30,5 +30,20 @@
     "createdAt": "2026-11-16T19:04:24.823784Z",
     "updatedAt": "2026-11-16T23:41:31.489Z",
     "lastRunStatus": "completed"
+  },
+  {
+    "id": "auto_calculator_math_1",
+    "name": "Calculator Math Task",
+    "instructions": "Open the Calculator app on the Android device, compute 127 multiplied by 83, take a screenshot of the result, and report the exact number shown on screen.",
+    "scheduleType": "once",
+    "intervalMinutes": 60,
+    "enabled": true,
+    "paused": false,
+    "status": "queued",
+    "nextRunAt": null,
+    "lastRunAt": null,
+    "runCount": 0,
+    "createdAt": "2026-11-18T00:00:00.000Z",
+    "updatedAt": "2026-11-18T00:00:00.000Z"
   }
 ]
