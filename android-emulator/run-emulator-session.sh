@@ -28,7 +28,18 @@ echo "=== VEXA Emulator Session Starting ==="
 echo "Cloudflare Worker: $CLOUDFLARE_WORKER_URL"
 
 echo "Waiting for Android emulator to be online..."
-adb wait-for-device
+# Bounded wait: `adb wait-for-device` blocks forever if the emulator never came
+# up, which is what made this step hang until the job timeout with no log.
+DEVICE_READY=false
+for i in $(seq 1 60); do
+  if adb devices 2>/dev/null | grep -q "device$"; then DEVICE_READY=true; break; fi
+  sleep 5
+done
+if [ "$DEVICE_READY" != "true" ]; then
+  echo "ERROR: no adb device after 5 minutes; emulator failed to boot"
+  adb devices || true
+  exit 1
+fi
 adb shell settings put global adb_enabled 1
 
 echo "Waiting for boot completion..."

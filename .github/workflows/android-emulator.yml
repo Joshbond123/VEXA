@@ -131,26 +131,42 @@ jobs:
           echo "Starting emulator (API 28, google_apis, x86_64, headless)..."
           nohup emulator -avd "$AVD_NAME" \
             -no-window -gpu swiftshader_indirect \
-            -noaudio -no-boot-anim -no-snapshot-save \
-            -memory 2048 \
+            -noaudio -no-boot-anim -no-snapshot \
+            -no-snapshot-save -no-snapshot-load \
+            -memory 2048 -cores 2 \
             > /tmp/emulator.log 2>&1 &
           echo "Emulator PID: $!"
 
           adb start-server
           echo "Waiting for adb device..."
+          DEVICE_SEEN=false
           for i in $(seq 1 120); do
             if adb devices 2>/dev/null | grep -q "emulator-5554.*device"; then
-              echo "adb device found: emulator-5554"; break
+              echo "adb device found: emulator-5554"; DEVICE_SEEN=true; break
             fi
             sleep 5
           done
+          if [ "$DEVICE_SEEN" != "true" ]; then
+            echo "::error::adb never saw emulator-5554"
+            adb devices || true
+            echo "----- /tmp/emulator.log (tail) -----"
+            tail -n 80 /tmp/emulator.log || true
+            exit 1
+          fi
 
           echo "Waiting for boot completion..."
+          BOOTED=false
           for i in $(seq 1 120); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || echo "0")
-            if [ "$BOOT" = "1" ]; then echo "Android boot completed!"; break; fi
+            if [ "$BOOT" = "1" ]; then echo "Android boot completed!"; BOOTED=true; break; fi
             sleep 5
           done
+          if [ "$BOOTED" != "true" ]; then
+            echo "::error::Android did not finish booting in 10 minutes"
+            echo "----- /tmp/emulator.log (tail) -----"
+            tail -n 80 /tmp/emulator.log || true
+            exit 1
+          fi
 
           adb shell input keyevent 82 || true
           adb shell wm dismiss-keyguard || true
