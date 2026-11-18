@@ -489,7 +489,9 @@ async function runAutomation(automation, emulator) {
             const parsedAction = actionMatch[1];
             const parsedArgs = actionMatch[2];
             // Only override if the current action doesn't already have proper x/y
-            if (!decision.x && !decision.y && !decision.text && !decision.app) {
+            const textIsEmpty = !decision.text || decision.text === 'undefined' || decision.text === 'undefined,undefined';
+            const appIsEmpty = !decision.app || decision.app === 'undefined' || decision.app === 'undefined,undefined';
+            if (!decision.x && !decision.y && textIsEmpty && appIsEmpty) {
               if (parsedAction === 'tap' || parsedAction === 'swipe') {
                 const coords = parsedArgs.split(',').map(c => Number(c.trim()));
                 if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
@@ -500,8 +502,8 @@ async function runAutomation(automation, emulator) {
                 }
               } else if (parsedAction === 'launch') {
                 const targetPkg = parsedArgs.trim();
-                // Replace "undefined" or empty with proper Calculator package name
-                const pkg = targetPkg === 'undefined' || !targetPkg
+                // Replace "undefined", "undefined,undefined", or empty with proper Calculator package name
+                const pkg = (targetPkg === 'undefined' || targetPkg === 'undefined,undefined' || !targetPkg)
                   ? 'com.google.android.calculator'
                   : targetPkg;
                 console.warn(`Normalizing malformed action "${decision.action}" → launch(${pkg})`);
