@@ -8,393 +8,406 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="assets/app.css" />
-  <meta name="description" content="VEXA — Autonomous AI agent that operates a real Android phone. Live device stream, multi-provider AI, persistent sessions." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Cpath d='M9 11l7 11 7-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <meta name="description" content="VEXA — an autonomous AI agent that operates a real Android phone. Live device stream, multi-provider AI, persistent sessions." />
+  <meta name="theme-color" content="#06080c" />
 </head>
 <body>
-  <div class="app-shell" id="appShell">
 
-    <!-- ======================= MOBILE TOPBAR ======================= -->
-    <header class="topbar topbar-mobile">
-      <button class="btn btn-icon" id="mobileMenuBtn" aria-label="Open menu">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
-      </button>
-      <div class="brand">
-        <span class="brand-dot"></span>
+<!-- ============================================================ ICON SPRITE -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2L4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l3.5-4 3 2.5L18 8"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8V4z"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></symbol>
+    <symbol id="i-recents" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-scroll" viewBox="0 0 24 24"><path d="M12 4v16"/><path d="M7 14l5 6 5-6"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M9 3H4v5M15 3h5v5M4 16v5h5M20 16v5h-5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/><path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8L16.5 17.5l1.8-.7L19 15z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-3.8-.9L3 21l2-4.9A8.4 8.4 0 1 1 21 11.5z"/></symbol>
+  </defs>
+</svg>
+
+<div class="app-shell" id="appShell">
+
+  <!-- ======================================================= SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7l6 10 6-10"/></svg></div>
+      <div class="brand-text">
         <span class="brand-name">VEXA</span>
-        <span class="brand-tag">OS</span>
-      </div>
-      <div id="mobileStatusPill" class="status-pill offline" style="font-size:0.7rem;padding:4px 8px;">Offline</div>
-    </header>
-
-    <!-- ======================= DESKTOP SHELL ======================= -->
-    <header class="topbar" id="desktopTopbar">
-      <div class="brand">
-        <span class="brand-dot"></span>
-        <span class="brand-name">VEXA</span>
-        <span class="brand-tag">Autonomous Agent</span>
-      </div>
-      <div class="topbar-center">
-        <div style="display:flex;align-items:center;gap:12px;color:var(--muted);font-family:var(--font-mono);font-size:0.8rem;">
-          <span id="headerGateway">Gateway: not configured</span>
-          <span class="dot" style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>
-          <span id="headerStatusText">offline</span>
-        </div>
-      </div>
-      <div class="topbar-right">
-        <button class="btn btn-ghost btn-sm" id="refreshTopBtn" title="Sync">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 12s-9-6-9-12 9 6 9 12"/><path d="M1 12s9 6 9 12-9-6-9-12"/></svg>
-        </button>
-        <button class="btn btn-primary btn-sm" id="openSettingsBtn" title="Settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-      </div>
-    </header>
-
-    <!-- Sidebar (desktop) -->
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-top">
-        <div class="brand">
-          <span class="brand-dot"></span>
-          <span class="brand-name">VEXA</span>
-          <span class="brand-tag">OS</span>
-        </div>
-        <button class="btn btn-icon" id="closeSidebarBtn" aria-label="Close menu" style="display:none;">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <nav class="nav-list">
-        <button class="nav-item active" data-view="dashboard">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9l18-6-18 6"/></svg>
-          <span>Dashboard</span>
-        </button>
-        <button class="nav-item" data-view="automations">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2" ry="2"/><circle cx="12" cy="5" r="2"/><path d="M7 5v10M17 5v10"/></svg>
-          <span>Automations</span>
-          <span class="nav-badge" id="autoCountBadge">0</span>
-        </button>
-        <button class="nav-item" data-view="reports">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 17v-2M4 13l5-5 5 5M16 3h5v5M16 21h5v-5"/></svg>
-          <span>Execution Reports</span>
-        </button>
-        <button class="nav-item" data-view="settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          <span>Settings</span>
-        </button>
-      </nav>
-      <div class="sidebar-footer">
-        <div class="emu-status-card">
-          <div class="emu-status-row">
-            <span class="label">Android Device</span>
-            <span id="sidebarEmuStatus" class="status-pill offline">Offline</span>
-          </div>
-          <div class="emu-meta" id="sidebarEmuMeta">Gateway not configured</div>
-          <button id="startEmulatorBtn" class="btn btn-primary btn-sm w-full" style="margin-top:6px;">
-            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            Start Emulator
-          </button>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Mobile drawer -->
-    <div class="mobile-drawer-overlay" id="mobileOverlay" aria-hidden="true"></div>
-    <div class="mobile-drawer" id="mobileDrawer">
-      <div class="sidebar-top" style="padding:14px 16px 16px;">
-        <div class="brand"><span class="brand-dot"></span><span class="brand-name">VEXA</span><span class="brand-tag">OS</span></div>
-        <button class="btn btn-icon" id="mobileCloseBtn" aria-label="Close menu">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <nav class="nav-list" style="padding:0 8px;">
-        <button class="nav-item active" data-view="dashboard"><span style="display:flex;align-items:center;gap:10px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9l18-6-18 6"/></svg><span>Dashboard</span></span></button>
-        <button class="nav-item" data-view="automations"><span style="display:flex;align-items:center;gap:10px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><rect x="3" y="11" width="18" height="10" rx="2" ry="2"/><circle cx="12" cy="5" r="2"/><path d="M7 5v10M17 5v10"/></svg><span>Automations</span></span></button>
-        <button class="nav-item" data-view="reports"><span style="display:flex;align-items:center;gap:10px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><path d="M9 17v-2M4 13l5-5 5 5M16 3h5v5M16 21h5v-5"/></svg><span>Reports</span></span></button>
-        <button class="nav-item" data-view="settings"><span style="display:flex;align-items:center;gap:10px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33"/></svg><span>Settings</span></span></button>
-      </nav>
-      <div class="sidebar-footer" style="padding:14px 16px;">
-        <div class="emu-status-card">
-          <div class="emu-status-row"><span class="label">Android Device</span><span id="mobileEmuStatus" class="status-pill offline">Offline</span></div>
-          <div class="emu-meta" id="mobileEmuMeta">Gateway not configured</div>
-          <button id="mobileStartEmulatorBtn" class="btn btn-primary btn-sm w-full" style="margin-top:6px;">Start Emulator</button>
-        </div>
+        <span class="brand-sub">Android Agent</span>
       </div>
     </div>
 
-    <!-- ======================= MAIN CONTENT ======================= -->
-    <main class="main-content">
+    <nav class="nav-list">
+      <span class="nav-label">Workspace</span>
+      <button class="nav-item active" data-view="dashboard">
+        <svg class="ic"><use href="#i-grid"/></svg><span>Dashboard</span>
+      </button>
+      <button class="nav-item" data-view="automations">
+        <svg class="ic"><use href="#i-bolt"/></svg><span>Automations</span>
+        <span class="nav-badge" id="autoCountBadge">0</span>
+      </button>
+      <button class="nav-item" data-view="reports">
+        <svg class="ic"><use href="#i-chart"/></svg><span>Reports</span>
+      </button>
+      <span class="nav-label">Configuration</span>
+      <button class="nav-item" data-view="settings">
+        <svg class="ic"><use href="#i-gear"/></svg><span>Settings</span>
+      </button>
+    </nav>
 
-      <!-- Dashboard -->
+    <div class="sidebar-device">
+      <div class="sd-head">
+        <span class="sd-title">Android Device</span>
+        <span class="pill offline" id="sidebarEmuStatus">Offline</span>
+      </div>
+      <div class="sd-meta" id="sidebarEmuMeta">Not connected</div>
+      <button class="btn btn-primary btn-sm btn-block" id="startEmulatorBtn">
+        <svg class="ic"><use href="#i-play"/></svg>Start Emulator
+      </button>
+    </div>
+  </aside>
+
+  <!-- ======================================================= MOBILE DRAWER -->
+  <div class="drawer-scrim" id="mobileOverlay" aria-hidden="true"></div>
+  <div class="drawer" id="mobileDrawer">
+    <div class="drawer-head">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7l6 10 6-10"/></svg></div>
+      <span class="brand-name">VEXA</span>
+      <button class="btn btn-icon" id="mobileCloseBtn" aria-label="Close menu"><svg class="ic"><use href="#i-close"/></svg></button>
+    </div>
+    <nav class="nav-list">
+      <button class="nav-item active" data-view="dashboard"><svg class="ic"><use href="#i-grid"/></svg><span>Dashboard</span></button>
+      <button class="nav-item" data-view="automations"><svg class="ic"><use href="#i-bolt"/></svg><span>Automations</span></button>
+      <button class="nav-item" data-view="reports"><svg class="ic"><use href="#i-chart"/></svg><span>Reports</span></button>
+      <button class="nav-item" data-view="settings"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></button>
+    </nav>
+    <div class="sidebar-device">
+      <div class="sd-head"><span class="sd-title">Android Device</span><span class="pill offline" id="mobileEmuStatus">Offline</span></div>
+      <div class="sd-meta" id="mobileEmuMeta">Not connected</div>
+      <button class="btn btn-primary btn-sm btn-block" id="mobileStartEmulatorBtn"><svg class="ic"><use href="#i-play"/></svg>Start Emulator</button>
+    </div>
+  </div>
+
+  <!-- ======================================================= MAIN -->
+  <div class="main-area">
+    <header class="topbar">
+      <button class="btn btn-icon topbar-menu" id="mobileMenuBtn" aria-label="Open menu"><svg class="ic"><use href="#i-menu"/></svg></button>
+      <div class="topbar-title" id="topbarTitle">Dashboard</div>
+      <div class="topbar-status">
+        <span class="pill offline" id="headerStatusPill"><span class="pill-dot"></span><span id="headerStatusText">Offline</span></span>
+        <span class="topbar-device" id="headerGateway">No device</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost btn-sm" id="refreshTopBtn"><svg class="ic"><use href="#i-refresh"/></svg><span class="hide-sm">Sync</span></button>
+        <button class="btn btn-primary btn-sm" id="openSettingsBtn"><svg class="ic"><use href="#i-gear"/></svg><span class="hide-sm">Settings</span></button>
+      </div>
+    </header>
+
+    <main class="main-content" id="mainContent">
+
+      <!-- ============================================ DASHBOARD -->
       <section id="view-dashboard" class="view active">
-        <div class="view-header">
-          <div>
-            <h1>Live Workspace</h1>
-            <span class="view-subtitle">DroidRun-powered autonomous Android agent &middot; real-time device stream</span>
+        <div class="stat-row">
+          <div class="stat-card">
+            <div class="stat-ic"><svg class="ic"><use href="#i-phone"/></svg></div>
+            <div><div class="stat-label">Device</div><div class="stat-value" id="statDevice">Offline</div></div>
           </div>
-          <div class="header-actions">
-            <button class="btn btn-ghost" id="refreshAllBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><path d="M23 12s-9-6-9-12 9 6 9 12"/><path d="M1 12s9 6 9 12-9-6-9-12"/></svg>Sync</button>
-            <button class="btn btn-primary" id="newAutoQuickBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New Automation</button>
+          <div class="stat-card">
+            <div class="stat-ic"><svg class="ic"><use href="#i-bolt"/></svg></div>
+            <div><div class="stat-label">Automations</div><div class="stat-value" id="statAutomations">0</div></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-ic"><svg class="ic"><use href="#i-cpu"/></svg></div>
+            <div><div class="stat-label">AI Provider</div><div class="stat-value" id="statProvider">NVIDIA NIM</div></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-ic"><svg class="ic"><use href="#i-chart"/></svg></div>
+            <div><div class="stat-label">Runs</div><div class="stat-value" id="statRuns">0</div></div>
           </div>
         </div>
 
         <div class="workspace-grid">
-          <!-- Left: Live Android Device -->
-          <div class="card phone-panel">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h2>Live Android Device</h2>
-                <span id="phoneLockBadge" class="badge">Idle</span>
+          <!-- DEVICE -->
+          <div class="panel device-panel">
+            <div class="panel-head">
+              <div class="panel-head-main">
+                <h2>Live Device</h2>
+                <span class="pill offline" id="deviceStatusPill"><span class="pill-dot"></span><span id="deviceStatusText">Offline</span></span>
               </div>
-              <div class="card-actions">
-                <button class="btn btn-ghost btn-sm btn-icon" id="expandPhoneBtn" title="Full screen">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H3v5M21 3h5v5M3 16v5M21 16v5h-5"/></svg>
-                </button>
-              </div>
+              <button class="btn btn-icon btn-ghost" id="expandPhoneBtn" title="Fullscreen"><svg class="ic"><use href="#i-expand"/></svg></button>
             </div>
 
-            <div class="phone-stage-wrap">
-              <div id="phoneStage" class="phone-stage" tabindex="0">
+            <div class="device-stage-wrap">
+              <div class="device-stage" id="phoneStage" tabindex="0">
                 <canvas id="phoneCanvas" width="1080" height="2400"></canvas>
-                <div id="phoneOfflineOverlay" class="phone-overlay">
-                  <div class="ov-box">
-                    <svg class="ov-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-                    <h3>Device Offline</h3>
-                    <p id="phoneOfflineReason">Start the Android Emulator workflow or configure your VEXA Gateway URL in Settings.</p>
-                    <button class="btn btn-primary btn-sm" id="overlayStartBtn">Start Emulator</button>
-                  </div>
+                <div class="device-overlay" id="phoneOfflineOverlay">
+                  <div class="ov-icon"><svg class="ic"><use href="#i-phone"/></svg></div>
+                  <h3 id="phoneOfflineTitle">Device Offline</h3>
+                  <p id="phoneOfflineReason">Start the Android emulator to see and control a live phone.</p>
+                  <button class="btn btn-primary btn-sm" id="overlayStartBtn"><svg class="ic"><use href="#i-play"/></svg>Start Emulator</button>
                 </div>
               </div>
             </div>
 
-            <div class="phone-controls">
-              <div class="nav-keys">
-                <button class="btn btn-ghost btn-sm" data-key="4" title="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M19 5l-7 7 7 7"/></svg><span style="font-size:0.72rem;">Back</span></button>
-                <button class="btn btn-ghost btn-sm" data-key="3" title="Home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><circle cx="12" cy="12" r="8"/></svg><span style="font-size:0.72rem;">Home</span></button>
-                <button class="btn btn-ghost btn-sm" data-key="187" title="Recents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><rect x="4" y="4" width="16" height="16" rx="2"/></svg><span style="font-size:0.72rem;">Recents</span></button>
-                <button class="btn btn-ghost btn-sm" id="scrollDownBtn" title="Scroll down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><line x1="12" y1="4" x2="12" y2="20"/><polyline points="18 10 12 16 6 10"/></svg><span style="font-size:0.72rem;">Scroll</span></button>
+            <div class="device-meta" id="deviceMetaRow">
+              <span id="deviceModelLabel">—</span>
+              <span id="deviceResLabel"></span>
+              <span id="deviceFrameLabel"></span>
+            </div>
+
+            <div class="device-controls">
+              <div class="key-row">
+                <button class="key-btn" data-key="4" title="Back"><svg class="ic"><use href="#i-back"/></svg></button>
+                <button class="key-btn" data-key="3" title="Home"><svg class="ic"><use href="#i-home"/></svg></button>
+                <button class="key-btn" data-key="187" title="Recents"><svg class="ic"><use href="#i-recents"/></svg></button>
+                <button class="key-btn" id="scrollDownBtn" title="Scroll down"><svg class="ic"><use href="#i-scroll"/></svg></button>
               </div>
               <form id="manualTypeForm" class="type-bar">
-                <input id="manualTypeInput" type="text" placeholder="Type text to device…" autocomplete="off" />
-                <button type="submit" class="btn btn-secondary btn-sm">Send</button>
+                <input id="manualTypeInput" type="text" placeholder="Type text on device…" autocomplete="off" />
+                <button type="submit" class="btn btn-secondary btn-sm"><svg class="ic"><use href="#i-send"/></svg></button>
               </form>
+              <div class="device-power">
+                <button class="btn btn-ghost btn-sm" id="stopEmulatorBtn"><svg class="ic"><use href="#i-power"/></svg>Stop</button>
+              </div>
             </div>
           </div>
 
-          <!-- Right: AI Agent Chat -->
-          <div class="card chat-panel">
-            <div class="card-header">
-              <div class="card-header-group chat-header-group">
-                <select id="chatAutoSelect" class="chat-select"></select>
-                <span id="chatAutoStatus" class="status-pill idle">Idle</span>
+          <!-- CHAT -->
+          <div class="panel chat-panel">
+            <div class="panel-head">
+              <div class="panel-head-main">
+                <div class="chat-avatar"><svg class="ic"><use href="#i-sparkle"/></svg></div>
+                <div>
+                  <h2>VEXA Agent</h2>
+                  <div class="chat-sub" id="chatSub">Ask anything, or give a task for the phone</div>
+                </div>
               </div>
-              <div class="card-actions">
-                <button class="btn btn-primary btn-sm" id="chatRunBtn">Run Now</button>
-                <button class="btn btn-ghost btn-sm" id="chatPauseBtn">Pause</button>
-                <button class="btn btn-danger btn-sm" id="chatStopBtn">Stop</button>
+              <div class="panel-head-actions">
+                <select id="chatAutoSelect" class="chat-select" title="Link a task"></select>
+                <button class="btn btn-icon btn-ghost" id="chatClearBtn" title="Clear conversation"><svg class="ic"><use href="#i-close"/></svg></button>
               </div>
             </div>
 
-            <div id="chatMessages" class="chat-messages">
-              <div class="chat-empty">
-                <div class="empty-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="opacity:0.5;"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"/><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 0 0-6 0"/></svg>
-                </div>
-                <div style="text-align:center;">
-                  <div style="font-weight:600;color:var(--text);margin-bottom:4px;">Select or create an automation</div>
-                  <div class="caption">Send instructions to the VEXA agent — it operates the live Android device and reports results.</div>
-                </div>
-              </div>
+            <div id="chatMessages" class="chat-messages"></div>
+
+            <div class="chat-suggest" id="chatSuggest">
+              <button class="chip" data-prompt="What's on the phone screen right now?">What's on screen?</button>
+              <button class="chip" data-prompt="Open the Settings app and tell me what you see.">Open Settings</button>
+              <button class="chip" data-prompt="Go to the home screen.">Go home</button>
+              <button class="chip" data-prompt="Take a screenshot and describe it.">Describe screen</button>
             </div>
 
-            <form id="chatForm" class="chat-input-bar">
-              <input id="chatInput" type="text" placeholder="Message VEXA (e.g. &quot;Open Play Store and install Calculator&quot;, &quot;pause&quot;, &quot;run now&quot;)…" autocomplete="off" />
-              <button type="submit" class="btn btn-primary" id="chatSendBtn">Send</button>
+            <form id="chatForm" class="chat-composer">
+              <textarea id="chatInput" rows="1" placeholder="Message VEXA…  (e.g. &quot;Open Chrome and search for weather&quot;)" autocomplete="off"></textarea>
+              <button type="submit" class="btn btn-primary composer-send" id="chatSendBtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
             </form>
           </div>
         </div>
       </section>
 
-      <!-- Automations -->
+      <!-- ============================================ AUTOMATIONS -->
       <section id="view-automations" class="view">
         <div class="view-header">
           <div>
             <h1>Automations</h1>
-            <span class="view-subtitle">Persistent, schedulable autonomous tasks executed on the live Android device.</span>
+            <p class="view-sub">Persistent, schedulable tasks the agent executes on the live Android device.</p>
           </div>
-          <button class="btn btn-primary" id="createAutoBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Create Automation</button>
+          <button class="btn btn-primary" id="createAutoBtn"><svg class="ic"><use href="#i-plus"/></svg>New Automation</button>
         </div>
-        <div id="automationsList" class="automations-grid"></div>
+        <div class="automations-grid" id="automationsList"></div>
       </section>
 
-      <!-- Execution Reports -->
+      <!-- ============================================ REPORTS -->
       <section id="view-reports" class="view">
         <div class="view-header">
           <div>
             <h1>Execution Reports</h1>
-            <span class="view-subtitle">Verified action logs, observed device state, and task outcomes.</span>
+            <p class="view-sub">Verified action logs, observed device state, and task outcomes.</p>
           </div>
-          <button class="btn btn-ghost btn-sm" id="refreshReportsBtn" title="Refresh">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M23 12s-9-6-9-12 9 6 9 12"/><path d="M1 12s9 6 9 12-9-6-9-12"/></svg>
-          </button>
+          <button class="btn btn-ghost" id="refreshReportsBtn"><svg class="ic"><use href="#i-refresh"/></svg>Refresh</button>
         </div>
-        <div id="reportsList" class="reports-list"></div>
+        <div class="reports-list" id="reportsList"></div>
       </section>
 
-      <!-- AI Providers & Settings -->
+      <!-- ============================================ SETTINGS -->
       <section id="view-settings" class="view">
         <div class="view-header">
           <div>
-            <h1>AI Providers &amp; Settings</h1>
-            <span class="view-subtitle">Multi-provider key rotation, automatic fallback, quota tracking, and gateway configuration.</span>
+            <h1>Settings</h1>
+            <p class="view-sub">AI providers, device gateway, and integrations. Secrets are stored server-side only.</p>
           </div>
         </div>
-        <form id="settingsForm" class="card settings-card">
-          <div class="settings-section">
-            <h3>Emulator Gateway</h3>
-            <div class="form-group">
-              <label for="cfgGatewayUrl">Gateway URL</label>
-              <input id="cfgGatewayUrl" type="url" placeholder="https://vexa-ai-agent.replyraven001.workers.dev" />
-              <small>Public URL of the VEXA Android Remote Gateway (Cloudflare Worker). Keys are never stored here.</small>
-            </div>
-          </div>
 
-          <div class="settings-section">
-            <h3>AI Providers</h3>
-            <div class="form-group">
-              <label for="cfgProvider">Primary Provider</label>
-              <select id="cfgProvider">
-                <option value="nvidia">NVIDIA NIM (nemotron)</option>
-                <option value="grok">xAI Grok</option>
-                <option value="openai">OpenAI / OpenAI-compatible</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="cfgApiKeys">API Keys (one per line)</label>
-              <textarea id="cfgApiKeys" rows="4" placeholder="nvapi-…&#10;xai-…&#10;sk-…"></textarea>
-              <small>Stored server-side only in Cloudflare KV. VEXA rotates keys per request and fails over automatically on rate limits (HTTP 429). Never committed or bundled.</small>
-            </div>
-            <div class="form-group" style="margin-top:8px;">
-              <label style="display:flex;align-items:center;gap:8px;">
-                <input type="checkbox" id="cfgKeyRotation" checked /> <span>Enable automatic key rotation &amp; provider fallback</span>
+        <form id="settingsForm" class="settings-grid">
+          <div class="panel settings-card">
+            <div class="panel-head"><h2>AI Provider</h2></div>
+            <div class="panel-body">
+              <div class="field">
+                <label for="cfgProvider">Primary provider</label>
+                <select id="cfgProvider">
+                  <option value="nvidia">NVIDIA NIM (nemotron)</option>
+                  <option value="grok">xAI Grok</option>
+                  <option value="openai">OpenAI / OpenAI-compatible</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfgApiKeys">API keys <span class="field-hint">one per line</span></label>
+                <textarea id="cfgApiKeys" rows="4" placeholder="nvapi-…&#10;xai-…&#10;sk-…"></textarea>
+                <small>Keys are rotated per request with automatic failover on rate limits. Stored in Cloudflare KV, never bundled.</small>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="cfgKeyRotation" checked />
+                <span class="switch-track"></span>
+                <span class="switch-label">Automatic key rotation &amp; provider fallback</span>
               </label>
+              <div class="test-row">
+                <button type="button" id="btnTestAI" class="btn btn-secondary btn-sm">Test AI connection</button>
+                <span id="aiTestResult" class="test-result"></span>
+              </div>
+              <div class="provider-list" id="providerStatusList"></div>
             </div>
           </div>
 
-          <div class="settings-section">
-            <h3>AI Connection Test</h3>
-            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
-              <button type="button" id="btnTestAI" class="btn btn-secondary btn-sm">Test AI Connection</button>
-              <span id="aiTestResult" class="caption" style="margin-left:8px;"></span>
+          <div class="panel settings-card">
+            <div class="panel-head"><h2>Device Gateway</h2></div>
+            <div class="panel-body">
+              <div class="field">
+                <label for="cfgGatewayUrl">Gateway URL</label>
+                <input id="cfgGatewayUrl" type="url" placeholder="https://vexa-ai-agent.replyraven001.workers.dev" />
+                <small>Public URL of the VEXA Android gateway. Leave empty to use the built-in default.</small>
+              </div>
+              <div class="field">
+                <label>Emulator control</label>
+                <div class="inline-actions">
+                  <button type="button" class="btn btn-primary btn-sm" id="settingsStartEmuBtn"><svg class="ic"><use href="#i-play"/></svg>Start emulator</button>
+                  <button type="button" class="btn btn-ghost btn-sm" id="settingsStopEmuBtn"><svg class="ic"><use href="#i-power"/></svg>Stop</button>
+                </div>
+                <small id="settingsEmuStatus" class="caption">Checking device status…</small>
+              </div>
             </div>
           </div>
 
-          <div class="settings-section">
-            <h3>GitHub Settings</h3>
-            <div class="form-group">
-              <label for="cfgGitHubPat">GitHub Personal Access Token</label>
-              <input id="cfgGitHubPat" type="password" placeholder="ghp_…" />
-              <small>Stored server-side only in Cloudflare KV. Never committed or bundled.</small>
-            </div>
-            <div class="form-group">
-              <label for="cfgGitHubRepo">GitHub Repository</label>
-              <input id="cfgGitHubRepo" type="text" placeholder="Joshbond123/VEXA" />
-            </div>
-            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
-              <button type="button" id="btnTestGitHub" class="btn btn-secondary btn-sm">Verify GitHub Permissions</button>
-              <span id="githubTestResult" class="caption" style="margin-left:8px;"></span>
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <h3>Cloudflare Settings</h3>
-            <div class="form-group">
-              <label for="cfgCloudflareAccountId">Cloudflare Account ID</label>
-              <input id="cfgCloudflareAccountId" type="text" placeholder="f932764f168d0f77f74ae2b5c0c35c27" />
-            </div>
-            <div class="form-group">
-              <label for="cfgCloudflareApiToken">Cloudflare API Token</label>
-              <input id="cfgCloudflareApiToken" type="password" placeholder="…" />
-            </div>
-            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
-              <button type="button" id="btnTestCloudflare" class="btn btn-secondary btn-sm">Test Cloudflare Connection</button>
-              <span id="cloudflareTestResult" class="caption" style="margin-left:8px;"></span>
+          <div class="panel settings-card">
+            <div class="panel-head"><h2>GitHub</h2></div>
+            <div class="panel-body">
+              <div class="field">
+                <label for="cfgGitHubPat">Personal access token</label>
+                <input id="cfgGitHubPat" type="password" placeholder="ghp_…" />
+                <small>Used to dispatch the emulator and agent workflows. Stored server-side only.</small>
+              </div>
+              <div class="field">
+                <label for="cfgGitHubRepo">Repository</label>
+                <input id="cfgGitHubRepo" type="text" placeholder="Joshbond123/VEXA" />
+              </div>
+              <div class="test-row">
+                <button type="button" id="btnTestGitHub" class="btn btn-secondary btn-sm">Verify permissions</button>
+                <span id="githubTestResult" class="test-result"></span>
+              </div>
             </div>
           </div>
 
-          <div class="settings-section">
-            <h3>Provider Status</h3>
-            <div id="providerStatusList" style="display:flex;flex-direction:column;gap:8px;"></div>
+          <div class="panel settings-card">
+            <div class="panel-head"><h2>Cloudflare</h2></div>
+            <div class="panel-body">
+              <div class="field">
+                <label for="cfgCloudflareAccountId">Account ID</label>
+                <input id="cfgCloudflareAccountId" type="text" placeholder="f932764f168d0f77f74ae2b5c0c35c27" />
+              </div>
+              <div class="field">
+                <label for="cfgCloudflareApiToken">API token</label>
+                <input id="cfgCloudflareApiToken" type="password" placeholder="…" />
+              </div>
+              <div class="test-row">
+                <button type="button" id="btnTestCloudflare" class="btn btn-secondary btn-sm">Test connection</button>
+                <span id="cloudflareTestResult" class="test-result"></span>
+              </div>
+            </div>
           </div>
 
-          <div class="form-actions">
-            <button type="submit" class="btn btn-primary">Save Settings</button>
-            <span id="settingsSavedMsg" class="muted"></span>
+          <div class="settings-actions">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+            <span id="settingsSavedMsg" class="caption"></span>
           </div>
         </form>
       </section>
 
     </main>
+  </div>
+</div>
 
-    <!-- ======================= MODAL: Create/Edit Automation ======================= -->
-    <div id="autoModal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-card">
-        <div class="modal-header">
-          <h2 id="autoModalTitle">New Automation</h2>
-          <button id="closeAutoModal" class="close-btn" aria-label="Close">✕</button>
+<!-- ============================================================ AUTOMATION MODAL -->
+<div id="autoModal" class="modal hidden">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="autoModalTitle">New Automation</h2>
+      <button class="btn btn-icon btn-ghost" data-close-modal aria-label="Close"><svg class="ic"><use href="#i-close"/></svg></button>
+    </div>
+    <form id="autoForm" class="modal-body">
+      <input type="hidden" id="autoEditId" />
+      <div class="field">
+        <label for="autoName">Name</label>
+        <input id="autoName" type="text" required placeholder="e.g. Install Calculator from Play Store" />
+      </div>
+      <div class="field">
+        <label for="autoInstructions">Instructions</label>
+        <textarea id="autoInstructions" rows="4" required placeholder="Describe what VEXA should do on the Android phone…"></textarea>
+        <small>Example: “Open Google Play Store, search for Calculator, install it, open the app, and report what you observe.”</small>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="autoScheduleType">Schedule</label>
+          <select id="autoScheduleType">
+            <option value="once">Run once</option>
+            <option value="interval">Recurring interval</option>
+            <option value="ai_decided">AI-decided</option>
+          </select>
         </div>
-        <div class="modal-body">
-          <form id="autoForm">
-            <input type="hidden" id="autoEditId" />
-            <div class="form-group">
-              <label for="autoName">Automation Name</label>
-              <input id="autoName" type="text" required placeholder="e.g. Install App from Play Store" />
-            </div>
-            <div class="form-group">
-              <label for="autoInstructions">Natural-Language Instructions</label>
-              <textarea id="autoInstructions" rows="4" required placeholder="Describe what VEXA should do on the Android phone…"></textarea>
-              <small class="caption">Example: &quot;Open Google Play Store, search for Calculator, install it, open the app, and report what you observe.&quot;</small>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label for="autoScheduleType">Schedule</label>
-                <select id="autoScheduleType">
-                  <option value="once">Run Once</option>
-                  <option value="interval">Recurring Interval</option>
-                  <option value="ai_decided">AI-Decided Schedule</option>
-                </select>
-              </div>
-              <div class="form-group" id="intervalGroup">
-                <label for="autoInterval">Interval</label>
-                <select id="autoInterval">
-                  <option value="30">Every 30 minutes</option>
-                  <option value="60" selected>Every 1 hour</option>
-                  <option value="120">Every 2 hours</option>
-                  <option value="180">Every 3 hours</option>
-                  <option value="custom">Custom (minutes)</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-group hidden" id="customIntervalGroup">
-              <label for="autoCustomMinutes">Custom Minutes</label>
-              <input id="autoCustomMinutes" type="number" min="5" value="45" />
-            </div>
-          </form>
-        </div>
-        <div class="modal-footer">
-          <button type="button" id="cancelAutoModal" class="btn btn-ghost">Cancel</button>
-          <button type="submit" form="autoForm" class="btn btn-primary">Save Automation</button>
+        <div class="field" id="intervalGroup">
+          <label for="autoInterval">Interval</label>
+          <select id="autoInterval">
+            <option value="30">Every 30 minutes</option>
+            <option value="60" selected>Every 1 hour</option>
+            <option value="120">Every 2 hours</option>
+            <option value="180">Every 3 hours</option>
+            <option value="custom">Custom…</option>
+          </select>
         </div>
       </div>
+      <div class="field hidden" id="customIntervalGroup">
+        <label for="autoCustomMinutes">Custom minutes</label>
+        <input id="autoCustomMinutes" type="number" min="5" value="45" />
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>
+      <button type="submit" form="autoForm" class="btn btn-primary">Save automation</button>
     </div>
-
-    <!-- Toast container -->
-    <div class="toast-container" id="toastContainer"></div>
-
-  <!-- Backend API base URL. Set via __vexaConfig before app.js loads.
-       When served by the vexa-api server (same origin) leave empty.
-       For production, set to the deployed backend, e.g. 'https://api.vexa.example.com'. -->
-  <script>window.__vexaConfig = { API_BASE: '' };</script>
-  <script src="assets/app.js"></script>
   </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>window.__vexaConfig = { API_BASE: '' };</script>
+<script src="assets/app.js"></script>
 </body>
 </html>

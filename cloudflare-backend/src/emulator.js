@@ -144,11 +144,12 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
         return Response.json({ error: `Invalid action: ${action}` }, { status: 400, headers: corsHeaders() });
       }
 
-      // Store the action in device state for the emulator to pick up
+      // Store the action in device state for the emulator to pick up. Only the
+      // action fields are written: upsertDeviceState merges, so the current
+      // screenshot and UI tree survive and the live preview keeps updating while
+      // an action is in flight.
       const actionPayload = JSON.stringify({ action, x, y, x2, y2, text, keycode, app, ms });
       await upsertDeviceState(env.DB, {
-        screenChecksum: null,
-        lastScreenshotUrl: null,
         lastAction: actionPayload,
         lastActionResult: 'pending',
       });
@@ -256,4 +257,4 @@ async function verifyAccessToken(token, env) {
     return { type: 'emulator', token };
   }
   return null;
-}
+}

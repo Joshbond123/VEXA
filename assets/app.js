@@ -1,889 +1,733 @@
 /*
  * VEXA — Autonomous AI Android Agent
- * Frontend application logic — Cloudflare Workers Backend
+ * Frontend logic. GitHub Pages frontend + Cloudflare Workers backend.
  *
- * Architecture: GitHub Pages (frontend) + Cloudflare Workers (backend)
- *   • Frontend is a static site served by GitHub Pages.
- *   • Backend is Cloudflare Workers at https://vexa-ai-agent.replyraven001.workers.dev
- *   • Data (automations, chats, emulator status, settings) lives in Cloudflare D1 + KV.
- *   • The Android emulator runs in GitHub Actions and registers with Cloudflare gateway.
- *   • The AI agent runs in GitHub Actions and reports back via Cloudflare API.
- *
- * No secrets are bundled, committed, or exposed in frontend code.
+ * The backend holds every secret; this file contains no keys.
  */
-
 (() => {
   'use strict';
 
-  /* ------------------------------------------------------------------ config */
-  const CLOUDFLARE_WORKER_URL = 'https://vexa-ai-agent.replyraven001.workers.dev';
+  const API = 'https://vexa-ai-agent.replyraven001.workers.dev';
+  const SCREEN_POLL_MS = 1600;
+  const STATUS_POLL_MS = 15000;
 
-  const PROVIDERS = [
-    { id: 'nvidia', label: 'NVIDIA NIM', model: 'nemotron-3.5-super-vl-120b-a12b' },
-    { id: 'grok',   label: 'xAI Grok',   model: 'grok-2-vision-1212' },
-    { id: 'openai', label: 'OpenAI-compatible', model: 'gpt-4o-mini' },
-  ];
-
-  /* ------------------------------------------------------------------ state */
-  const state = {
-    automations: [],
-    emulator: { gatewayUrl: '', status: 'offline', deviceModel: '', androidVersion: '', resolution: '', loggedInAccount: '' },
-    activeAutoId: null,
-    chats: {},
-    executions: {},
-    settings: {
-      gatewayUrl: '',
-      provider: 'nvidia',
-      apiKeys: '',
-      keyRotation: true,
-      githubPat: '',
-      githubRepo: 'Joshbond123/VEXA',
-      cloudflareAccountId: '',
-      cloudflareApiToken: '',
-    },
-    streamTimer: null,
-    pointerDown: null,
-    providerStatus: {},
-    pendingChat: null,
-    pollTimer: null,
-    authToken: null,
+  const PROVIDERS = {
+    nvidia: { label: 'NVIDIA NIM', model: 'nemotron-3.5-super-vl-120b-a12b' },
+    grok: { label: 'xAI Grok', model: 'grok-2-vision-1212' },
+    openai: { label: 'OpenAI-compatible', model: 'gpt-4o-mini' },
   };
 
-  /* ------------------------------------------------------------------ dom helpers */
+  const state = {
+    automations: [],
+    activeAutoId: '',
+    chat: [],
+    device: { online: false, hasFrame: false, frameFresh: false, model: '', version: '', resolution: '' },
+    streamTimer: null,
+    statusTimer: null,
+    screenSignature: null,
+    streaming: false,
+    chatBusy: false,
+  };
+
+  /* ------------------------------------------------------------------ dom */
   const $ = (id) => document.getElementById(id);
-  const on = (el, type, handler) => el && el.addEventListener(type, handler);
-  const escapeHtml = (str) => String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const on = (el, ev, fn) => el && el.addEventListener(ev, fn);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const icon = (id, cls = 'ic') => `<svg class="${cls}"><use href="#${id}"/></svg>`;
+  const nowTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   /* ------------------------------------------------------------------ toast */
-  function toast(msg, type = 'info', duration = 4000) {
-    const container = $('toastContainer');
-    if (!container) return;
+  function toast(msg, kind = 'info', ms = 4200) {
+    const box = $('toastContainer');
+    if (!box) return;
     const el = document.createElement('div');
-    el.className = `toast ${type === 'err' ? 'err' : type === 'ok' ? 'ok' : ''}`;
-    el.innerHTML = `<div style="flex:1">${escapeHtml(msg)}</div><button class="toast-close" aria-label="Dismiss">✕</button>`;
-    container.appendChild(el);
-    const dismiss = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); };
-    const btn = el.querySelector('.toast-close');
-    if (btn) btn.addEventListener('click', dismiss);
-    setTimeout(dismiss, duration);
-    return el;
+    el.className = `toast ${kind === 'err' ? 'err' : kind === 'ok' ? 'ok' : kind === 'warn' ? 'warn' : ''}`;
+    el.innerHTML = `<div style="flex:1">${esc(msg)}</div><button class="toast-close" aria-label="Dismiss">${icon('i-close', 'ic ic-sm')}</button>`;
+    box.appendChild(el);
+    const kill = () => { el.style.opacity = '0'; el.style.transform = 'translateX(20px)'; setTimeout(() => el.remove(), 250); };
+    el.querySelector('.toast-close').addEventListener('click', kill);
+    setTimeout(kill, ms);
   }
 
-  /* ------------------------------------------------------------------ cloudflare workers api */
-  async function cfApi(path, options = {}) {
-    const url = `${CLOUDFLARE_WORKER_URL}${path}`;
-    const headers = { 'Content-Type': 'application/json', ...options.headers };
-    if (state.authToken) {
-      headers.Authorization = `Bearer ${state.authToken}`;
-    }
-    const res = await fetch(url, { ...options, headers });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      throw new Error(`API ${res.status}: ${errText}`);
-    }
-    return res.json();
-  }
-
-  /* ------------------------------------------------------------------ auth */
-  async function login(email, password) {
-    const data = await cfApi('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
+  /* ------------------------------------------------------------------ api */
+  async function api(path, opts = {}) {
+    const res = await fetch(`${API}${path}`, {
+      ...opts,
+      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     });
-    if (data.ok && data.token) {
-      state.authToken = data.token;
-      return data;
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON */ }
+    if (!res.ok) {
+      const detail = body && (body.error || body.message) ? `: ${body.error || body.message}` : '';
+      throw new Error(`${res.status}${detail}`);
     }
-    throw new Error(data.error || 'Login failed');
+    return body || {};
   }
 
-  async function verifyToken() {
-    if (!state.authToken) return false;
-    try {
-      const data = await cfApi('/api/auth/verify', {
-        method: 'POST',
-        body: JSON.stringify({ token: state.authToken }),
-      });
-      return data.valid;
-    } catch {
-      return false;
-    }
+  /* ================================================================ DEVICE */
+  function setPill(el, cls, text) {
+    if (!el) return;
+    el.className = `pill ${cls}`;
+    el.innerHTML = `<span class="pill-dot"></span><span>${esc(text)}</span>`;
   }
 
-  /* ------------------------------------------------------------------ emulator / device */
-  async function checkEmulatorHealth() {
-    try {
-      const data = await cfApi('/api/frontend/emulator-status');
-      const online = data.ok && data.online;
-      const cls = `status-pill ${online ? 'online' : 'offline'}`;
-      for (const id of ['sidebarEmuStatus', 'mobileEmuStatus']) {
-        const el = $(id); if (el) { el.className = cls; el.textContent = online ? 'Online' : 'Offline'; }
-      }
-      for (const id of ['sidebarEmuMeta', 'mobileEmuMeta']) {
-        const el = $(id); if (el) el.textContent = online
-          ? `${data.deviceModel || 'Android'} ${data.androidVersion ? '• ' + data.androidVersion : ''}`
-          : 'Gateway not configured';
-      }
-      const overlay = $('phoneOfflineOverlay');
-      if (overlay) overlay.classList.toggle('hidden', online);
-      const h = $('headerStatusText');
-      if (h) h.textContent = online ? 'online' : 'offline';
-      const hg = $('headerGateway');
-      if (hg) hg.textContent = online ? `Gateway: ${data.deviceModel || 'unknown'}` : 'Gateway: not configured';
-      state.emulator.status = online ? 'online' : 'offline';
-      if (data.deviceModel) state.emulator.deviceModel = data.deviceModel;
-      if (data.androidVersion) state.emulator.androidVersion = data.androidVersion;
-      if (data.resolution) state.emulator.resolution = data.resolution;
-
-      if (online) {
-        startScreenPolling(data.gatewayUrl || CLOUDFLARE_WORKER_URL);
-      }
-      return online;
-    } catch (err) {
-      console.error('Emulator health check failed:', err);
-      return false;
-    }
-  }
-
-  function startScreenPolling(gwUrl) {
-    if (state.streamTimer) clearInterval(state.streamTimer);
-    const canvas = $('phoneCanvas');
-    const ctx = canvas ? canvas.getContext('2d') : null;
-    if (!canvas || !ctx) return;
-    const pullFrame = async () => {
-      try {
-        // Use Cloudflare Worker screenshot endpoint
-        const res = await fetch(`${CLOUDFLARE_WORKER_URL}/api/emulator/screenshot`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.screenshotUrl) {
-          const img = await createImageBitmap(await (await fetch(data.screenshotUrl)).blob());
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          img.close();
-        }
-      } catch { /* silent retry */ }
+  function applyDeviceState(d) {
+    state.device = {
+      online: !!d.online,
+      hasFrame: !!d.hasFrame,
+      frameFresh: !!d.frameFresh,
+      model: d.deviceModel || '',
+      version: d.androidVersion || '',
+      resolution: d.resolution || '',
     };
-    pullFrame();
-    state.streamTimer = setInterval(pullFrame, 1500);
-  }
 
-  async function sendPhoneAction(action, payload = {}) {
-    try {
-      await cfApi('/api/emulator/action', {
-        method: 'POST',
-        body: JSON.stringify({ action, ...payload }),
-      });
-      const badge = $('phoneLockBadge');
-      if (badge) {
-        badge.textContent = 'Active';
-        badge.className = 'badge status-pill running';
-        setTimeout(() => { badge.textContent = 'Idle'; badge.className = 'badge'; }, 1200);
-      }
-    } catch (err) {
-      console.error('Phone action failed:', err);
-      toast(`Device action failed: ${err.message}`, 'err');
+    const label = d.online ? 'Online' : 'Offline';
+    const cls = d.online ? 'online' : 'offline';
+
+    setPill($('headerStatusPill'), cls, label);
+    setPill($('deviceStatusPill'), cls, label);
+    setPill($('sidebarEmuStatus'), cls, label);
+    setPill($('mobileEmuStatus'), cls, label);
+
+    const desc = d.online
+      ? [d.deviceModel, d.androidVersion ? `Android ${d.androidVersion}` : '', d.resolution].filter(Boolean).join(' · ')
+      : (d.registered ? 'Registered, heartbeat stale' : 'Not connected');
+    for (const id of ['sidebarEmuMeta', 'mobileEmuMeta']) {
+      const el = $(id); if (el) el.textContent = desc;
+    }
+
+    const hg = $('headerGateway');
+    if (hg) hg.textContent = d.online ? (d.deviceModel || 'Android device') : 'No device';
+
+    const statDevice = $('statDevice');
+    if (statDevice) statDevice.textContent = d.online ? 'Online' : 'Offline';
+    const sd = $('settingsEmuStatus');
+    if (sd) sd.textContent = d.online
+      ? `Online — ${desc}`
+      : 'Offline. Click Start emulator to launch one (boot takes 5–10 minutes).';
+
+    const modelLabel = $('deviceModelLabel');
+    if (modelLabel) modelLabel.textContent = d.deviceModel ? `${d.deviceModel}` : '—';
+    const resLabel = $('deviceResLabel');
+    if (resLabel) resLabel.textContent = d.resolution || '';
+    const frameLabel = $('deviceFrameLabel');
+    if (frameLabel) {
+      if (!d.online) frameLabel.textContent = '';
+      else if (d.frameFresh) frameLabel.textContent = 'live';
+      else if (d.hasFrame) frameLabel.textContent = 'stale frame';
+      else frameLabel.textContent = 'waiting for frame…';
+    }
+
+    // Overlay: hide only when a usable frame is on screen.
+    const overlay = $('phoneOfflineOverlay');
+    if (overlay) overlay.classList.toggle('hidden', d.online && d.frameFresh);
+
+    const chatSub = $('chatSub');
+    if (chatSub) {
+      chatSub.textContent = d.online
+        ? `Connected · ${d.deviceModel || 'Android'}`
+        : 'Device offline — start the emulator to control the phone';
     }
   }
 
-  function setupPhoneInteraction() {
+  async function refreshStatus() {
+    try {
+      const d = await api('/api/frontend/emulator-status');
+      applyDeviceState(d);
+      if (d.online && d.frameFresh) startStream();
+      return d;
+    } catch (err) {
+      applyDeviceState({ online: false, registered: false });
+      return { online: false };
+    }
+  }
+
+  /* ---------------------------------------------------------------- stream */
+  function startStream() {
+    if (state.streaming) return;
+    state.streaming = true;
+    const tick = () => pullFrame();
+    tick();
+    state.streamTimer = setInterval(tick, SCREEN_POLL_MS);
+  }
+
+  function stopStream() {
+    state.streaming = false;
+    if (state.streamTimer) { clearInterval(state.streamTimer); state.streamTimer = null; }
+  }
+
+  async function pullFrame() {
+    const canvas = $('phoneCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    try {
+      const res = await fetch(`${API}/api/public/screenshot?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      if (blob.size < 200) return; // 1x1 blank placeholder
+      const bmp = await createImageBitmap(blob);
+      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      bmp.close();
+      const overlay = $('phoneOfflineOverlay');
+      if (overlay) overlay.classList.add('hidden');
+    } catch { /* transient; retry next tick */ }
+  }
+
+  /* -------------------------------------------------------------- actions */
+  async function deviceAction(action, params = {}) {
+    if (!state.device.online) { toast('Device is offline. Start the emulator first.', 'warn'); return false; }
+    try {
+      await api('/api/emulator/action', { method: 'POST', body: JSON.stringify({ action, ...params }) });
+      setTimeout(pullFrame, 900);
+      return true;
+    } catch (err) {
+      toast(`Action failed: ${err.message}`, 'err');
+      return false;
+    }
+  }
+
+  function toDeviceCoords(ev, canvas) {
+    const r = canvas.getBoundingClientRect();
+    const x = Math.round(((ev.clientX - r.left) / r.width) * canvas.width);
+    const y = Math.round(((ev.clientY - r.top) / r.height) * canvas.height);
+    return { x: Math.max(0, Math.min(canvas.width, x)), y: Math.max(0, Math.min(canvas.height, y)) };
+  }
+
+  function setupPhoneInput() {
     const stage = $('phoneStage');
     const canvas = $('phoneCanvas');
     if (!stage || !canvas) return;
 
-    const toDeviceCoords = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = Math.round(((e.clientX - rect.left) / rect.width) * 1080);
-      const y = Math.round(((e.clientY - rect.top) / rect.height) * 2400);
-      return { x: Math.max(0, Math.min(1080, x)), y: Math.max(0, Math.min(2400, y)) };
-    };
-
-    stage.addEventListener('pointerdown', (e) => { state.pointerDown = { ...toDeviceCoords(e), t: Date.now() }; });
-
-    stage.addEventListener('pointerup', (e) => {
-      if (!state.pointerDown) return;
-      const end = toDeviceCoords(e);
-      const dx = Math.abs(end.x - state.pointerDown.x);
-      const dy = Math.abs(end.y - state.pointerDown.y);
-      if (dx < 20 && dy < 20) {
-        sendPhoneAction('tap', { x: end.x, y: end.y });
+    let down = null;
+    on(stage, 'pointerdown', (e) => { down = toDeviceCoords(e, canvas); });
+    on(stage, 'pointerup', async (e) => {
+      if (!down) return;
+      const up = toDeviceCoords(e, canvas);
+      const dx = Math.abs(up.x - down.x);
+      const dy = Math.abs(up.y - down.y);
+      if (dx < 14 && dy < 14) {
+        await deviceAction('tap', { x: up.x, y: up.y });
       } else {
-        sendPhoneAction('swipe', { x: state.pointerDown.x, y: state.pointerDown.y, x2: end.x, y2: end.y });
+        await deviceAction('swipe', { x: down.x, y: down.y, x2: up.x, y2: up.y, duration_ms: 300 });
       }
-      state.pointerDown = null;
+      down = null;
     });
-
-    document.querySelectorAll('.nav-keys button[data-key]').forEach((btn) => {
-      on(btn, 'click', () => sendPhoneAction('key', { keycode: Number(btn.dataset.key) }));
-    });
-
-    const scrollDown = $('scrollDownBtn');
-    if (scrollDown) on(scrollDown, 'click', () => sendPhoneAction('swipe', { x: 540, y: 1700, x2: 540, y2: 700 }));
-
-    on($('manualTypeForm'), 'submit', (e) => {
-      e.preventDefault();
-      const input = $('manualTypeInput');
-      if (!input.value.trim()) return;
-      sendPhoneAction('type', { text: input.value });
-      input.value = '';
-    });
-
-    const expandBtn = $('expandPhoneBtn');
-    if (expandBtn) {
-      on(expandBtn, 'click', () => {
-        const expanded = stage.classList.toggle('expanded');
-        expandBtn.innerHTML = expanded
-          ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><line x1="20" y1="7" x2="4" y2="7"/><line x1="4" y1="7" x2="4" y2="20"/></svg>'
-          : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H3v5M21 3h5v5M3 16v5M21 16v5h-5"/></svg>';
-        expandBtn.title = expanded ? 'Close full screen' : 'Full screen';
-      });
-    }
+    on(stage, 'pointercancel', () => { down = null; });
   }
 
-  /* ------------------------------------------------------------------ sync & render */
-  async function syncAll() {
-    setPageLoading(true);
-    try {
-      const [autos] = await Promise.all([
-        cfApi('/api/frontend/automations'),
-      ]);
-      state.automations = Array.isArray(autos.automations) ? autos.automations : [];
-      if (!state.activeAutoId && state.automations.length) state.activeAutoId = state.automations[0].id;
-      $('autoCountBadge').textContent = state.automations.length;
-      renderAutomations();
-      renderChatSelector();
-      renderProviderStatus();
-      if (state.activeAutoId) await loadAutomationDetails(state.activeAutoId);
-      await checkEmulatorHealth();
-      startChatPoll();
-    } finally {
-      setPageLoading(false);
-    }
-  }
-
-  async function loadAutomationDetails(autoId) {
-    const [chat] = await Promise.all([
-      cfApi(`/api/frontend/chats/${autoId}`),
-    ]);
-    state.chats[autoId] = Array.isArray(chat.chats) ? chat.chats : [];
-    renderChat();
-  }
-
-  /* ------------------------------------------------------------------ chat */
-  function renderChatSelector() {
-    const sel = $('chatAutoSelect');
-    if (!sel) return;
-    sel.innerHTML = state.automations.length
-      ? state.automations.map((a) => `<option value="${a.id}" ${a.id === state.activeAutoId ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')
-      : '<option value="">No automations</option>';
-    const active = state.automations.find((a) => a.id === state.activeAutoId);
-    const statusEl = $('chatAutoStatus');
-    if (statusEl) {
-      statusEl.className = `status-pill ${active?.status || 'idle'}`;
-      statusEl.textContent = active?.status || 'idle';
-    }
-  }
-
-  function appendMessage(role, content, meta) {
+  /* ================================================================= CHAT */
+  function renderWelcome() {
     const box = $('chatMessages');
     if (!box) return;
-    const empty = box.querySelector('.chat-empty');
-    if (empty) empty.remove();
-    const el = document.createElement('div');
-    el.className = `chat-msg ${role}`;
-    el.innerHTML = `<div class="chat-bubble">${escapeHtml(content)}</div><div class="chat-msg-meta">${meta || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>`;
+    box.innerHTML = `
+      <div class="chat-welcome">
+        <div class="w-ic">${icon('i-sparkle')}</div>
+        <h3>How can I help?</h3>
+        <p>Ask me about the phone, or give me a task. When the device is online I can see the screen and act on it.</p>
+      </div>`;
+  }
+
+  function bubbleEl(role, text, meta) {
+    const wrap = document.createElement('div');
+    wrap.className = `msg ${role}`;
+    const avatar = role === 'agent'
+      ? `<div class="msg-avatar">${icon('i-sparkle', 'ic')}</div>`
+      : role === 'user'
+        ? `<div class="msg-avatar">${icon('i-phone', 'ic')}</div>`
+        : '';
+    const metaHtml = meta ? `<div class="msg-time">${esc(meta)}</div>` : '';
+    wrap.innerHTML = `${avatar}<div><div class="bubble">${esc(text)}</div>${metaHtml}</div>`;
+    return wrap;
+  }
+
+  function appendMessage(role, text, meta) {
+    const box = $('chatMessages');
+    if (!box) return null;
+    const welcome = box.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+    const el = bubbleEl(role, text, meta || nowTime());
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
     return el;
   }
 
-  function renderChat() {
+  function showTyping() {
     const box = $('chatMessages');
-    if (!box) return;
-    const msgs = state.chats[state.activeAutoId] || [];
-    box.innerHTML = '';
-    if (!msgs.length) {
-      box.innerHTML = '<div class="chat-empty"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="opacity:0.5;"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"/><path d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 0 0-6 0"/></svg></div><div style="text-align:center;"><div style="font-weight:600;color:var(--text);margin-bottom:4px;">No messages yet</div><div class="caption">Send an instruction or click Run Now to start the agent on the live device.</div></div></div>';
-      return;
-    }
-    msgs.forEach((m) => appendMessage(m.role, m.content, m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''));
-  }
-
-  function addToolStep(label, detail) {
-    const box = $('chatMessages');
-    if (!box) return;
+    if (!box) return null;
+    const welcome = box.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
     const el = document.createElement('div');
-    el.className = 'chat-tool';
-    el.innerHTML = `<div class="tool-step"><div class="tool-icon" aria-hidden="true">▶</div><div><div style="font-weight:600;color:var(--text-2)">${escapeHtml(label)}</div><div style="color:var(--muted)">${escapeHtml(detail || '')}</div></div></div>`;
+    el.className = 'msg agent';
+    el.id = 'typingMsg';
+    el.innerHTML = `<div class="msg-avatar">${icon('i-sparkle', 'ic')}</div><div><div class="bubble typing"><i></i><i></i><i></i></div></div>`;
     box.appendChild(el);
     box.scrollTop = box.scrollHeight;
     return el;
   }
 
-  function setTyping(yes) {
+  function clearTyping() {
+    const t = $('typingMsg');
+    if (t) t.remove();
+  }
+
+  function setChatBusy(busy) {
+    state.chatBusy = busy;
     const btn = $('chatSendBtn');
-    if (btn) { btn.disabled = yes; if (yes) btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span>'; else btn.textContent = 'Send'; }
-  }
-
-  async function sendChatMessage(text) {
-    if (!state.activeAutoId) { toast('Select an automation first.', 'warn'); return; }
-    if (!text.trim()) return;
-
+    if (btn) {
+      btn.disabled = busy;
+      btn.innerHTML = busy ? '<span class="spinner"></span>' : icon('i-send');
+    }
     const input = $('chatInput');
-    input.value = '';
-    const chat = state.chats[state.activeAutoId] || [];
-    const now = new Date().toISOString();
-    chat.push({ id: `msg_${uid()}`, role: 'user', content: text, timestamp: now });
-    state.chats[state.activeAutoId] = chat;
-    appendMessage('user', text, new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-
-    // Save user message to Cloudflare
-    await cfApi(`/api/frontend/chats/${state.activeAutoId}`, {
-      method: 'POST',
-      body: JSON.stringify({ role: 'user', content: text }),
-    });
-
-    const lower = text.trim().toLowerCase();
-    if (lower === 'pause' || lower === 'stop') {
-      // Pause via automation update
-      await cfApi(`/api/frontend/automations/${state.activeAutoId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ paused: true, status: 'stopped' }),
-      });
-      return;
-    }
-    if (lower === 'run' || lower === 'run now') {
-      await dispatchAgent(state.activeAutoId);
-      return;
-    }
-
-    // Dispatch agent task via Cloudflare backend
-    await dispatchAgent(state.activeAutoId, text);
+    if (input) input.disabled = busy;
   }
 
-  async function dispatchAgent(automationId, instructions = null) {
+  async function sendChat(text) {
+    const msg = String(text || '').trim();
+    if (!msg || state.chatBusy) return;
+
+    appendMessage('user', msg);
+    state.chat.push({ role: 'user', content: msg });
+    const input = $('chatInput');
+    if (input) { input.value = ''; autoGrow(input); }
+    const suggest = $('chatSuggest');
+    if (suggest) suggest.classList.add('hidden');
+
+    setChatBusy(true);
+    showTyping();
+
     try {
-      const data = await cfApi('/api/agent/run', {
+      const data = await api('/api/frontend/chat', {
         method: 'POST',
-        body: JSON.stringify({ automationId, instructions }),
+        body: JSON.stringify({
+          message: msg,
+          automationId: state.activeAutoId || null,
+          history: state.chat.slice(-8),
+        }),
       });
-      if (data.ok) {
-        toast('Agent task dispatched to GitHub Actions via Cloudflare backend.', 'ok');
-        state.pendingChat = { automationId, message: instructions || '', sentAt: new Date().toISOString() };
-        startChatPoll();
+      clearTyping();
+
+      if (!data.ok) {
+        appendMessage('agent', `I couldn't reach the AI provider. ${data.error || ''}`.trim());
+        toast(data.error || 'AI request failed', 'err');
       } else {
-        toast(data.error || 'Agent dispatch failed', 'err');
+        appendMessage('agent', data.reply);
+        state.chat.push({ role: 'agent', content: data.reply });
+        if (data.queuedAction) {
+          appendMessage('system', `queued device action: ${JSON.stringify(data.queuedAction)}`);
+          setTimeout(pullFrame, 1200);
+        }
       }
     } catch (err) {
-      toast(`Agent dispatch failed: ${err.message}`, 'err');
+      clearTyping();
+      appendMessage('agent', `Request failed: ${err.message}`);
+      toast(`Chat failed: ${err.message}`, 'err');
+    } finally {
+      setChatBusy(false);
+      const inp = $('chatInput');
+      if (inp) inp.focus();
     }
   }
 
-  function startChatPoll() {
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    if (!state.pendingChat) return;
-    let polls = 0;
-    state.pollTimer = setInterval(async () => {
-      polls++;
-      if (polls > 120) { clearInterval(state.pollTimer); state.pollTimer = null; return; }
-      await checkForAgentResponse();
-    }, 5000);
-    checkForAgentResponse();
+  function autoGrow(ta) {
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, 140)}px`;
   }
 
-  async function checkForAgentResponse() {
-    if (!state.pendingChat || !state.activeAutoId) return;
-    const chat = await cfApi(`/api/frontend/chats/${state.activeAutoId}`);
-    const msgs = Array.isArray(chat.chats) ? chat.chats : [];
-    const last = msgs[msgs.length - 1];
-    if (last && last.role === 'agent' && last.timestamp > (state.pendingChat.sentAt || 0)) {
-      state.chats[state.activeAutoId] = msgs;
-      state.pendingChat = null;
-      if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
-      renderChat();
+  /* ========================================================= AUTOMATIONS */
+  async function loadAutomations() {
+    try {
+      const data = await api('/api/frontend/automations');
+      state.automations = Array.isArray(data.automations) ? data.automations : [];
+    } catch {
+      state.automations = [];
     }
+    renderAutomations();
+    renderAutomationSelect();
+    const badge = $('autoCountBadge');
+    if (badge) badge.textContent = String(state.automations.length);
+    const stat = $('statAutomations');
+    if (stat) stat.textContent = String(state.automations.length);
+    const runs = $('statRuns');
+    if (runs) runs.textContent = String(state.automations.reduce((n, a) => n + (a.runCount || 0), 0));
   }
 
-  /* ------------------------------------------------------------------ automations UI */
   function renderAutomations() {
     const list = $('automationsList');
     if (!list) return;
     if (!state.automations.length) {
-      list.innerHTML = '<div class="card" style="grid-column:1/-1;padding:30px;text-align:center;"><div class="empty-icon" style="width:44px;height:44px;margin:0 auto 12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="opacity:0.4;"><rect x="3" y="11" width="18" height="10" rx="2" ry="2"/><circle cx="12" cy="5" r="2"/><path d="M7 5v10M17 5v10"/></svg></div><h3 style="color:var(--text);margin-bottom:6px;">No automations yet</h3><p class="caption">Create an automation to run autonomous tasks on the live Android device.</p></div>';
+      list.innerHTML = `<div class="empty-state">
+        <div class="es-ic">${icon('i-bolt')}</div>
+        <h3>No automations yet</h3>
+        <p>Create one to have the agent run a task on the live Android device on a schedule.</p>
+      </div>`;
       return;
     }
-    list.innerHTML = state.automations.map((a) => `
-      <div class="auto-card">
-        <div class="auto-card-top">
-          <h3>${escapeHtml(a.name)}</h3>
-          <span class="status-pill ${a.status || 'idle'}">${(a.status || 'idle').replace(/_/g, ' ')}</span>
+    list.innerHTML = state.automations.map((a) => {
+      const status = a.paused ? 'stopped' : (a.status || 'idle');
+      return `<div class="auto-card">
+        <div class="auto-top">
+          <h3>${esc(a.name)}</h3>
+          <span class="pill ${statusClass(status)}">${esc(status.replace(/_/g, ' '))}</span>
         </div>
-        <p>${escapeHtml(a.instructions)}</p>
+        <p>${esc(a.instructions || 'No instructions')}</p>
         <div class="auto-meta">
-          ${a.scheduleType === 'once' ? 'Run once' : a.scheduleType === 'ai_decided' ? 'AI-decided' : `Every ${a.intervalMinutes}m`}
-          &#8226; Runs: ${a.runCount || 0}
-          ${a.lastRunAt ? `<br>Last: ${new Date(a.lastRunAt).toLocaleString()}` : ''}
+          ${esc(scheduleLabel(a))} · runs ${a.runCount || 0}${a.lastRunAt ? `<br>last ${esc(new Date(a.lastRunAt).toLocaleString())}` : ''}
         </div>
         <div class="auto-actions">
-          <button class="btn btn-primary btn-sm" onclick="window.__vexa.runNow('${a.id}')">Run</button>
-          <button class="btn btn-ghost btn-sm" onclick="window.__vexa.openChat('${a.id}')">Chat</button>
-          <button class="btn btn-ghost btn-sm" onclick="window.__vexa.togglePause('${a.id}')">${a.paused ? 'Resume' : 'Pause'}</button>
-          <button class="btn btn-ghost btn-sm" onclick="window.__vexa.editAuto('${a.id}')">Edit</button>
-          <button class="btn btn-danger btn-sm" onclick="window.__vexa.deleteAuto('${a.id}')">Delete</button>
+          <button class="btn btn-primary btn-sm" data-act="run" data-id="${a.id}">${icon('i-play', 'ic ic-sm')}Run</button>
+          <button class="btn btn-ghost btn-sm" data-act="chat" data-id="${a.id}">${icon('i-chat', 'ic ic-sm')}Chat</button>
+          <button class="btn btn-ghost btn-sm" data-act="pause" data-id="${a.id}">${a.paused ? 'Resume' : 'Pause'}</button>
+          <button class="btn btn-ghost btn-sm" data-act="edit" data-id="${a.id}">${icon('i-edit', 'ic ic-sm')}</button>
+          <button class="btn btn-danger btn-sm" data-act="delete" data-id="${a.id}">${icon('i-trash', 'ic ic-sm')}</button>
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   }
 
+  function statusClass(s) {
+    if (['running', 'queued', 'starting'].includes(s)) return 'busy';
+    if (['completed'].includes(s)) return 'online';
+    if (['failed', 'stopped'].includes(s)) return 'offline';
+    return 'idle';
+  }
+
+  function scheduleLabel(a) {
+    if (a.scheduleType === 'once') return 'runs once';
+    if (a.scheduleType === 'ai_decided') return 'AI-decided';
+    return `every ${a.intervalMinutes || 60}m`;
+  }
+
+  function renderAutomationSelect() {
+    const sel = $('chatAutoSelect');
+    if (!sel) return;
+    const opts = ['<option value="">No linked task</option>']
+      .concat(state.automations.map((a) => `<option value="${a.id}" ${a.id === state.activeAutoId ? 'selected' : ''}>${esc(a.name)}</option>`));
+    sel.innerHTML = opts.join('');
+  }
+
+  /* ============================================================= REPORTS */
   async function renderReports() {
     const list = $('reportsList');
     if (!list) return;
+    list.innerHTML = `<div class="report-card"><span class="report-meta">Loading…</span></div>`;
     try {
-      const data = await cfApi('/api/frontend/automations');
-      const automations = Array.isArray(data.automations) ? data.automations : [];
-      if (!automations.length) {
-        list.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:var(--muted)"><div class="empty-icon" style="width:44px;height:44px;margin:0 auto 12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="opacity:0.4;"><path d=\"M12 2v20M4.93 4.93l14.14 14.14M20 12h-16M4.93 19.07l14.14-14.14\"/></svg></div><h3 style="color:var(--text);margin-bottom:6px;">No executions yet</h3><p class="caption">Run automations to generate execution reports with verified action logs and device state.</p></div>';
+      const data = await api('/api/frontend/automations');
+      const autos = Array.isArray(data.automations) ? data.automations : [];
+      if (!autos.length) {
+        list.innerHTML = `<div class="empty-state">
+          <div class="es-ic">${icon('i-chart')}</div>
+          <h3>No executions yet</h3>
+          <p>Run an automation and its verified action log and outcome will appear here.</p>
+        </div>`;
         return;
       }
-      list.innerHTML = automations.map((a) => {
-        const statusColor = {
-          'completed': 'var(--success)',
-          'failed': 'var(--danger)',
-          'running': 'var(--brand)',
-          'queued': 'var(--warn)',
-          'stopped': 'var(--dim)',
-          'idle': 'var(--muted)',
-        }[a.status] || 'var(--muted)';
-        return `
-          <div class="report-card">
-            <div class="top">
-              <strong>${escapeHtml(a.name)}</strong>
-              <span class="status-pill" style="color:${statusColor};border-color:${statusColor}33;background:${statusColor}14;">${(a.status || 'idle').replace(/_/g, ' ')}</span>
-            </div>
-            <div class="report-meta">
-              ID: ${escapeHtml(a.id)} &#8226; Schedule: ${a.scheduleType === 'once' ? 'Run once' : a.scheduleType === 'ai_decided' ? 'AI-decided' : `Every ${a.intervalMinutes}m`} &#8226; Runs: ${a.runCount || 0}
-            </div>
-            <p>${escapeHtml(a.instructions || 'No instructions recorded')}</p>
-            ${a.lastRunAt ? `<div class="report-meta">Last run: ${new Date(a.lastRunAt).toLocaleString()} &#8226; Status: ${a.lastRunStatus || 'N/A'}</div>` : ''}
-            <div style="margin-top:12px;display:flex;gap:6px;">
-              <button class="btn btn-ghost btn-sm" onclick="window.__vexa.openChat('${a.id}')">View Chat</button>
-              <button class="btn btn-primary btn-sm" onclick="window.__vexa.runNow('${a.id}')">Re-run</button>
-            </div>
+      list.innerHTML = autos.map((a) => `
+        <div class="report-card">
+          <div class="report-top">
+            <strong>${esc(a.name)}</strong>
+            <span class="pill ${statusClass(a.status || 'idle')}">${esc((a.status || 'idle').replace(/_/g, ' '))}</span>
           </div>
-        `;
-      }).join('');
+          <div class="report-meta">${esc(a.id)} · ${esc(scheduleLabel(a))} · runs ${a.runCount || 0}</div>
+          <p>${esc(a.instructions || 'No instructions recorded')}</p>
+          ${a.lastRunAt ? `<div class="report-meta">last run ${esc(new Date(a.lastRunAt).toLocaleString())} · ${esc(a.lastRunStatus || 'n/a')}</div>` : ''}
+          <div style="display:flex;gap:6px;margin-top:6px;">
+            <button class="btn btn-ghost btn-sm" data-act="chat" data-id="${a.id}">${icon('i-chat', 'ic ic-sm')}Chat</button>
+            <button class="btn btn-primary btn-sm" data-act="run" data-id="${a.id}">${icon('i-play', 'ic ic-sm')}Re-run</button>
+          </div>
+        </div>`).join('');
     } catch (err) {
-      list.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:var(--danger)"><p>Failed to load execution reports.</p><small>' + escapeHtml(err.message) + '</small></div>';
+      list.innerHTML = `<div class="empty-state">
+        <div class="es-ic">${icon('i-alert')}</div>
+        <h3>Couldn't load reports</h3>
+        <p>${esc(err.message)}</p>
+      </div>`;
     }
   }
 
-  /* ------------------------------------------------------------------ provider status */
-  async function renderProviderStatus() {
+  /* ============================================================ SETTINGS */
+  async function loadSettings() {
+    try {
+      const data = await api('/api/frontend/settings');
+      const s = data.settings || {};
+      if ($('cfgGatewayUrl')) $('cfgGatewayUrl').value = s.gatewayUrl || '';
+      if ($('cfgProvider')) $('cfgProvider').value = s.provider || 'nvidia';
+      if ($('cfgApiKeys')) $('cfgApiKeys').value = '';
+      if ($('cfgApiKeys')) $('cfgApiKeys').placeholder = s.hasApiKey
+        ? 'Key stored securely — paste a new one to replace'
+        : 'nvapi-…';
+      if ($('cfgKeyRotation')) $('cfgKeyRotation').checked = s.keyRotation !== false;
+      if ($('cfgGitHubRepo')) $('cfgGitHubRepo').value = s.githubRepo || 'Joshbond123/VEXA';
+      if ($('cfgGitHubPat')) $('cfgGitHubPat').placeholder = s.hasGitHubPat ? 'Stored securely — paste to replace' : 'ghp_…';
+      if ($('cfgCloudflareAccountId')) $('cfgCloudflareAccountId').value = s.cloudflareAccountId || '';
+      if ($('cfgCloudflareApiToken')) $('cfgCloudflareApiToken').placeholder = s.hasCloudflareToken ? 'Stored securely' : '…';
+      renderProviders(s);
+    } catch (err) {
+      toast(`Couldn't load settings: ${err.message}`, 'err');
+    }
+  }
+
+  function renderProviders(s) {
     const list = $('providerStatusList');
     if (!list) return;
+    const active = s.provider || 'nvidia';
+    list.innerHTML = Object.entries(PROVIDERS).map(([id, p]) => `
+      <div class="provider-row">
+        <div>
+          <div class="pr-name">${esc(p.label)}</div>
+          <div class="pr-model">${esc(p.model)}</div>
+        </div>
+        <span class="pill ${id === active ? 'online' : 'idle'}">${id === active ? 'primary' : 'standby'}</span>
+      </div>`).join('');
+    const stat = $('statProvider');
+    if (stat) stat.textContent = (PROVIDERS[active] || PROVIDERS.nvidia).label;
+  }
+
+  async function saveSettings(e) {
+    e.preventDefault();
+    const payload = {
+      gatewayUrl: ($('cfgGatewayUrl') || {}).value || '',
+      provider: ($('cfgProvider') || {}).value || 'nvidia',
+      keyRotation: $('cfgKeyRotation') ? $('cfgKeyRotation').checked : true,
+      githubRepo: ($('cfgGitHubRepo') || {}).value || '',
+      cloudflareAccountId: ($('cfgCloudflareAccountId') || {}).value || '',
+    };
+    // Only send secrets when the user actually typed something.
+    const keys = ($('cfgApiKeys') || {}).value || '';
+    if (keys.trim()) payload.apiKeys = keys.trim();
+    const pat = ($('cfgGitHubPat') || {}).value || '';
+    if (pat.trim()) payload.githubPat = pat.trim();
+    const cf = ($('cfgCloudflareApiToken') || {}).value || '';
+    if (cf.trim()) payload.cloudflareApiToken = cf.trim();
+
     try {
-      const data = await cfApi('/api/frontend/settings');
-      const settings = data.settings || {};
-      list.innerHTML = PROVIDERS.map((p) => {
-        const primary = p.id === settings.provider;
-        return `
-          <div class="key-row">
-            <div style="flex:1;">
-              <div style="display:flex;justify-content:space-between;font-weight:600;color:var(--text-2);">
-                <span>${escapeHtml(p.label)}</span>
-                <span class="status-pill ${primary ? 'online' : 'offline'}">${primary ? 'Primary' : 'Available'}</span>
-              </div>
-              <div class="caption" style="margin-top:2px;">${escapeHtml(p.model)} &#8226; ${settings.hasApiKey ? 'API key configured' : 'API key not configured'}</div>
-            </div>
-          </div>
-        `;
-      }).join('');
+      await api('/api/frontend/settings', { method: 'POST', body: JSON.stringify(payload) });
+      const msg = $('settingsSavedMsg');
+      if (msg) { msg.textContent = 'Saved'; setTimeout(() => { msg.textContent = ''; }, 2500); }
+      toast('Settings saved', 'ok');
+      await loadSettings();
+      await refreshStatus();
     } catch (err) {
-      list.innerHTML = '<div class="caption">Unable to load provider status.</div>';
+      toast(`Save failed: ${err.message}`, 'err');
     }
   }
 
-  /* ------------------------------------------------------------------ connection tests */
-  async function testAIConnection() {
-    const btn = $('btnTestAI');
-    const result = $('aiTestResult');
-    const cfgProvider = $('cfgProvider');
-    const cfgApiKeys = $('cfgApiKeys');
-
-    const provider = (cfgProvider ? cfgProvider.value : 'nvidia');
-    const apiKey = (cfgApiKeys ? cfgApiKeys.value : '').trim().split('\n')[0] || '';
-
-    if (!apiKey) {
-      result.textContent = 'No API key configured';
-      result.style.color = '#ef4444';
-      return;
-    }
-
+  async function testConnection(kind, btn, resultEl) {
+    const original = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = 'Testing...';
-    result.textContent = '';
+    btn.innerHTML = '<span class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:currentColor"></span>';
+    if (resultEl) resultEl.textContent = '';
     try {
-      const data = await cfApi('/api/settings/test-ai', {
-        method: 'POST',
-        body: JSON.stringify({ provider, apiKey, model: PROVIDERS.find(p => p.id === provider)?.model }),
-      });
-      if (data.ok) {
-        result.textContent = `✅ ${data.message || 'Connection successful'}`;
-        result.style.color = '#22c55e';
-        toast('AI connection test passed', 'ok');
+      let body;
+      if (kind === 'ai') {
+        const key = (($('cfgApiKeys') || {}).value || '').trim().split('\n')[0];
+        if (!key) throw new Error('Enter an API key first');
+        body = { provider: ($('cfgProvider') || {}).value || 'nvidia', apiKey: key };
+      } else if (kind === 'github') {
+        const pat = (($('cfgGitHubPat') || {}).value || '').trim();
+        if (!pat) throw new Error('Enter a GitHub token first');
+        body = { githubPat: pat, githubRepo: ($('cfgGitHubRepo') || {}).value || 'Joshbond123/VEXA' };
       } else {
-        result.textContent = `❌ ${data.error || 'Connection failed'}`;
-        result.style.color = '#ef4444';
+        const id = (($('cfgCloudflareAccountId') || {}).value || '').trim();
+        const tok = (($('cfgCloudflareApiToken') || {}).value || '').trim();
+        if (!id || !tok) throw new Error('Account ID and token required');
+        body = { cloudflareAccountId: id, cloudflareApiToken: tok };
+      }
+      const data = await api(`/api/settings/test-${kind}`, { method: 'POST', body: JSON.stringify(body) });
+      if (data.ok) {
+        if (resultEl) { resultEl.textContent = data.message || 'OK'; resultEl.style.color = 'var(--ok)'; }
+        toast(data.message || 'Connection OK', 'ok');
+      } else {
+        if (resultEl) { resultEl.textContent = data.error || 'Failed'; resultEl.style.color = 'var(--bad)'; }
       }
     } catch (err) {
-      result.textContent = `❌ ${err.message}`;
-      result.style.color = '#ef4444';
+      if (resultEl) { resultEl.textContent = err.message; resultEl.style.color = 'var(--bad)'; }
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Test AI Connection';
+      btn.innerHTML = original;
     }
   }
 
-  async function testGitHubConnection() {
-    const btn = $('btnTestGitHub');
-    const result = $('githubTestResult');
-    const cfgGitHubPat = $('cfgGitHubPat');
-    const cfgGitHubRepo = $('cfgGitHubRepo');
-
-    const githubPat = (cfgGitHubPat ? cfgGitHubPat.value : '').trim();
-    const githubRepo = (cfgGitHubRepo ? cfgGitHubRepo.value : 'Joshbond123/VEXA').trim();
-
-    if (!githubPat) {
-      result.textContent = 'No GitHub PAT configured';
-      result.style.color = '#ef4444';
-      return;
-    }
-
-    btn.disabled = true;
-    btn.textContent = 'Verifying...';
-    result.textContent = '';
+  /* ======================================================= EMULATOR CONTROL */
+  async function startEmulator() {
+    toast('Starting the Android emulator…', 'info');
     try {
-      const data = await cfApi('/api/settings/test-github', {
-        method: 'POST',
-        body: JSON.stringify({ githubPat, githubRepo }),
-      });
-      if (data.ok) {
-        const p = data.permissions || {};
-        result.textContent = `✅ Connected (admin:${p.admin}, push:${p.push}, pull:${p.pull})`;
-        result.style.color = '#22c55e';
-        toast('GitHub connection verified', 'ok');
-      } else {
-        result.textContent = `❌ ${data.error || 'Connection failed'}`;
-        result.style.color = '#ef4444';
-      }
+      const data = await api('/api/frontend/emulator/start', { method: 'POST', body: JSON.stringify({}) });
+      if (!data.ok) { toast(data.error || 'Could not start emulator', 'err'); return; }
+      toast('Emulator booting — this takes 5–10 minutes.', 'ok');
+      pollUntilOnline();
     } catch (err) {
-      result.textContent = `❌ ${err.message}`;
-      result.style.color = '#ef4444';
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Verify GitHub Permissions';
+      toast(`Could not start emulator: ${err.message}`, 'err');
     }
   }
 
-  async function testCloudflareConnection() {
-    const btn = $('btnTestCloudflare');
-    const result = $('cloudflareTestResult');
-    const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
-    const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
+  function pollUntilOnline() {
+    let n = 0;
+    const timer = setInterval(async () => {
+      n++;
+      const d = await refreshStatus();
+      if (d.online) { clearInterval(timer); toast('Emulator is online.', 'ok'); }
+      else if (n >= 90) { clearInterval(timer); toast('Still booting — check back shortly.', 'warn'); }
+    }, 8000);
+  }
 
-    const accountId = (cfgCloudflareAccountId ? cfgCloudflareAccountId.value : '').trim();
-    const apiToken = (cfgCloudflareApiToken ? cfgCloudflareApiToken.value : '').trim();
-
-    if (!accountId || !apiToken) {
-      result.textContent = 'Account ID and API Token required';
-      result.style.color = '#ef4444';
-      return;
-    }
-
-    btn.disabled = true;
-    btn.textContent = 'Testing...';
-    result.textContent = '';
+  async function stopEmulator() {
+    if (!confirm('Stop the Android emulator?')) return;
     try {
-      const data = await cfApi('/api/settings/test-cloudflare', {
-        method: 'POST',
-        body: JSON.stringify({ cloudflareAccountId: accountId, cloudflareApiToken: apiToken }),
-      });
-      if (data.ok) {
-        result.textContent = `✅ ${data.message || 'Connection successful'}`;
-        result.style.color = '#22c55e';
-        toast('Cloudflare connection test passed', 'ok');
-      } else {
-        result.textContent = `❌ ${data.error || 'Connection failed'}`;
-        result.style.color = '#ef4444';
-      }
+      const data = await api('/api/frontend/emulator/stop', { method: 'POST', body: JSON.stringify({}) });
+      toast(data.message || 'Emulator stopped', 'ok');
+      stopStream();
+      await refreshStatus();
     } catch (err) {
-      result.textContent = `❌ ${err.message}`;
-      result.style.color = '#ef4444';
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Test Cloudflare Connection';
+      toast(`Could not stop emulator: ${err.message}`, 'err');
     }
   }
 
-  /* ------------------------------------------------------------------ page loading */
-  function setPageLoading(yes) {
-    document.body.classList.toggle('loading', yes);
+  /* ================================================================ NAV */
+  function showView(name) {
+    document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
+    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
+    const title = document.querySelector(`.nav-item[data-view="${name}"] span`);
+    const t = $('topbarTitle');
+    if (t) t.textContent = title ? title.textContent : 'Dashboard';
+    closeDrawer();
+    const main = $('mainContent');
+    if (main) main.scrollTop = 0;
+    if (name === 'reports') renderReports();
+    if (name === 'settings') { loadSettings(); refreshStatus(); }
+    if (name === 'automations') loadAutomations();
   }
 
-  /* ------------------------------------------------------------------ actions */
-  window.__vexa = {
-    async runNow(id) {
-      await dispatchAgent(id);
-    },
-    openChat(id) {
+  function openDrawer() { $('mobileDrawer').classList.add('open'); $('mobileOverlay').classList.add('open'); }
+  function closeDrawer() { $('mobileDrawer').classList.remove('open'); $('mobileOverlay').classList.remove('open'); }
+
+  /* ============================================================ MODAL */
+  function openAutoModal(edit) {
+    $('autoEditId').value = edit ? edit.id : '';
+    $('autoName').value = edit ? edit.name : '';
+    $('autoInstructions').value = edit ? edit.instructions : '';
+    $('autoScheduleType').value = edit ? (edit.scheduleType || 'once') : 'once';
+    $('autoInterval').value = edit ? String(edit.intervalMinutes || 60) : '60';
+    $('customIntervalGroup').classList.toggle('hidden', $('autoScheduleType').value !== 'custom');
+    $('autoModalTitle').textContent = edit ? 'Edit Automation' : 'New Automation';
+    $('autoModal').classList.remove('hidden');
+  }
+  function closeAutoModal() { $('autoModal').classList.add('hidden'); }
+
+  async function saveAutomation(e) {
+    e.preventDefault();
+    const id = $('autoEditId').value;
+    const intervalRaw = $('autoInterval').value;
+    const payload = {
+      name: $('autoName').value.trim(),
+      instructions: $('autoInstructions').value.trim(),
+      scheduleType: $('autoScheduleType').value,
+      intervalMinutes: intervalRaw === 'custom' ? Number($('autoCustomMinutes').value) : Number(intervalRaw),
+      enabled: true,
+      status: 'queued',
+      nextRunAt: new Date().toISOString(),
+    };
+    try {
+      if (id) await api(`/api/frontend/automations/${id}`, { method: 'PUT', body: JSON.stringify({ ...payload, id }) });
+      else await api('/api/frontend/automations', { method: 'POST', body: JSON.stringify(payload) });
+      closeAutoModal();
+      await loadAutomations();
+      toast('Automation saved', 'ok');
+    } catch (err) {
+      toast(`Save failed: ${err.message}`, 'err');
+    }
+  }
+
+  async function automationAction(act, id) {
+    const a = state.automations.find((x) => x.id === id);
+    if (!a) return;
+    if (act === 'run') {
+      try {
+        await api('/api/agent/run', { method: 'POST', body: JSON.stringify({ automationId: id }) });
+        toast('Task dispatched to the agent.', 'ok');
+      } catch (err) { toast(`Dispatch failed: ${err.message}`, 'err'); }
+    } else if (act === 'chat') {
       state.activeAutoId = id;
-      renderChatSelector();
-      loadAutomationDetails(id);
-      const btn = document.querySelector(`[data-view="dashboard"]`);
-      if (btn) btn.click();
-    },
-    async togglePause(id) {
-      const a = state.automations.find((x) => x.id === id);
-      if (!a) return;
-      a.paused = !a.paused;
-      a.status = a.paused ? 'stopped' : 'waiting';
-      a.updatedAt = new Date().toISOString();
-      await cfApi(`/api/frontend/automations/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(a),
-      });
-      renderAutomations();
-      renderChatSelector();
-    },
-    editAuto(id) {
-      const a = state.automations.find((x) => x.id === id);
-      if (!a) return;
-      $('autoEditId').value = a.id;
-      $('autoName').value = a.name;
-      $('autoInstructions').value = a.instructions;
-      $('autoScheduleType').value = a.scheduleType;
-      $('autoInterval').value = String(a.intervalMinutes || 60);
-      $('customIntervalGroup').classList.toggle('hidden', $('autoScheduleType').value !== 'custom');
-      $('autoModalTitle').textContent = 'Edit Automation';
-      $('autoModal').classList.add('open');
-    },
-    async deleteAuto(id) {
-      if (!confirm('Delete this automation?')) return;
-      await cfApi(`/api/frontend/automations/${id}`, { method: 'DELETE' });
-      state.automations = state.automations.filter((x) => x.id !== id);
-      renderAutomations();
-      renderChatSelector();
-    },
-  };
+      renderAutomationSelect();
+      showView('dashboard');
+      appendMessage('system', `linked task: ${a.name}`);
+    } else if (act === 'pause') {
+      try {
+        await api(`/api/frontend/automations/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ ...a, paused: !a.paused, status: a.paused ? 'waiting' : 'stopped' }),
+        });
+        await loadAutomations();
+      } catch (err) { toast(`Update failed: ${err.message}`, 'err'); }
+    } else if (act === 'edit') {
+      openAutoModal(a);
+    } else if (act === 'delete') {
+      if (!confirm(`Delete "${a.name}"?`)) return;
+      try {
+        await api(`/api/frontend/automations/${id}`, { method: 'DELETE' });
+        await loadAutomations();
+        toast('Automation deleted', 'ok');
+      } catch (err) { toast(`Delete failed: ${err.message}`, 'err'); }
+    }
+  }
 
-  /* ------------------------------------------------------------------ init */
-  function init() {
-    // Navigation
-    document.querySelectorAll('.nav-item').forEach((btn) => {
-      on(btn, 'click', () => {
-        document.querySelectorAll('.nav-item').forEach((b) => b.classList.remove('active'));
-        document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-        btn.classList.add('active');
-        const view = $(`view-${btn.dataset.view}`);
-        if (view) view.classList.add('active');
-        const drawer = $('mobileDrawer');
-        const overlay = $('mobileOverlay');
-        if (drawer) drawer.classList.remove('open');
-        if (overlay) overlay.classList.remove('open');
-        if (btn.dataset.view === 'reports') renderReports();
-        if (btn.dataset.view === 'settings') { renderProviderStatus(); renderReports(); }
-      });
+  /* ================================================================ INIT */
+  function bind() {
+    document.querySelectorAll('.nav-item').forEach((b) => on(b, 'click', () => showView(b.dataset.view)));
+    on($('mobileMenuBtn'), 'click', openDrawer);
+    on($('mobileCloseBtn'), 'click', closeDrawer);
+    on($('mobileOverlay'), 'click', closeDrawer);
+    on($('openSettingsBtn'), 'click', () => showView('settings'));
+    on($('refreshTopBtn'), 'click', async () => { await loadAutomations(); await refreshStatus(); toast('Synced', 'ok', 1600); });
+
+    on($('startEmulatorBtn'), 'click', startEmulator);
+    on($('mobileStartEmulatorBtn'), 'click', startEmulator);
+    on($('overlayStartBtn'), 'click', startEmulator);
+    on($('stopEmulatorBtn'), 'click', stopEmulator);
+    on($('settingsStartEmuBtn'), 'click', startEmulator);
+    on($('settingsStopEmuBtn'), 'click', stopEmulator);
+
+    on($('expandPhoneBtn'), 'click', () => $('phoneStage').classList.toggle('fullscreen'));
+    on($('scrollDownBtn'), 'click', () => deviceAction('scroll', { direction: 'down' }));
+    document.querySelectorAll('.key-btn[data-key]').forEach((b) => on(b, 'click', () => deviceAction('key', { keycode: Number(b.dataset.key) })));
+    on($('manualTypeForm'), 'submit', async (e) => {
+      e.preventDefault();
+      const input = $('manualTypeInput');
+      const v = input.value;
+      if (!v) return;
+      await deviceAction('type', { text: v });
+      input.value = '';
     });
 
-    // Mobile drawer toggle
-    const mobileMenuBtn = $('mobileMenuBtn');
-    const mobileCloseBtn = $('mobileCloseBtn');
-    const mobileOverlay = $('mobileOverlay');
-    const mobileDrawer = $('mobileDrawer');
-    if (mobileMenuBtn && mobileDrawer && mobileOverlay) {
-      on(mobileMenuBtn, 'click', () => { mobileDrawer.classList.add('open'); mobileOverlay.classList.add('open'); });
-      const closeDrawer = () => { mobileDrawer.classList.remove('open'); mobileOverlay.classList.remove('open'); };
-      on(mobileCloseBtn, 'click', closeDrawer);
-      on(mobileOverlay, 'click', closeDrawer);
-    }
+    on($('chatForm'), 'submit', (e) => { e.preventDefault(); sendChat($('chatInput').value); });
+    on($('chatInput'), 'input', (e) => autoGrow(e.target));
+    on($('chatInput'), 'keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat($('chatInput').value); }
+    });
+    on($('chatClearBtn'), 'click', () => { state.chat = []; renderWelcome(); const s = $('chatSuggest'); if (s) s.classList.remove('hidden'); });
+    on($('chatAutoSelect'), 'change', (e) => { state.activeAutoId = e.target.value; });
+    document.querySelectorAll('.chip').forEach((c) => on(c, 'click', () => sendChat(c.dataset.prompt)));
 
-    // Start emulator via Cloudflare backend (triggers GitHub Actions workflow)
-    const startEmu = async () => {
-      toast('Starting Android emulator via GitHub Actions...', 'ok');
-      // The emulator workflow is triggered separately; we poll for status
-      let attempts = 0;
-      const pollInterval = setInterval(async () => {
-        attempts++;
-        const online = await checkEmulatorHealth();
-        if (online) {
-          clearInterval(pollInterval);
-          toast('Android emulator is now online!', 'ok');
-        } else if (attempts >= 30) {
-          clearInterval(pollInterval);
-          toast('Emulator still booting. Check back in a minute.', 'warn');
-        }
-      }, 4000);
-    };
-    on($('startEmulatorBtn'), 'click', startEmu);
-    on($('overlayStartBtn'), 'click', startEmu);
-    on($('mobileStartEmulatorBtn'), 'click', startEmu);
-    on($('refreshAllBtn'), 'click', syncAll);
-    on($('refreshTopBtn'), 'click', syncAll);
+    on($('createAutoBtn'), 'click', () => openAutoModal(null));
+    on($('autoForm'), 'submit', saveAutomation);
+    on($('autoScheduleType'), 'change', (e) => $('customIntervalGroup').classList.toggle('hidden', e.target.value !== 'custom'));
+    document.querySelectorAll('[data-close-modal]').forEach((el) => on(el, 'click', closeAutoModal));
+    on($('automationsList'), 'click', (e) => { const b = e.target.closest('[data-act]'); if (b) automationAction(b.dataset.act, b.dataset.id); });
+    on($('reportsList'), 'click', (e) => { const b = e.target.closest('[data-act]'); if (b) automationAction(b.dataset.act, b.dataset.id); });
     on($('refreshReportsBtn'), 'click', renderReports);
 
-    const openSettingsBtn = $('openSettingsBtn');
-    if (openSettingsBtn) on(openSettingsBtn, 'click', () => document.querySelector('[data-view="settings"]').click());
+    on($('settingsForm'), 'submit', saveSettings);
+    on($('btnTestAI'), 'click', (e) => testConnection('ai', e.currentTarget, $('aiTestResult')));
+    on($('btnTestGitHub'), 'click', (e) => testConnection('github', e.currentTarget, $('githubTestResult')));
+    on($('btnTestCloudflare'), 'click', (e) => testConnection('cloudflare', e.currentTarget, $('cloudflareTestResult')));
+  }
 
-    // New automation modal
-    const openNewModal = () => {
-      $('autoEditId').value = '';
-      $('autoForm').reset();
-      $('autoInterval').value = '60';
-      $('customIntervalGroup').classList.add('hidden');
-      $('autoModalTitle').textContent = 'New Automation';
-      $('autoModal').classList.add('open');
-    };
-    on($('newAutoQuickBtn'), 'click', openNewModal);
-    on($('createAutoBtn'), 'click', openNewModal);
-    on($('closeAutoModal'), 'click', () => $('autoModal').classList.remove('open'));
-    on($('cancelAutoModal'), 'click', () => $('autoModal').classList.remove('open'));
-
-    on($('autoInterval'), 'change', (e) => {
-      $('customIntervalGroup').classList.toggle('hidden', e.target.value !== 'custom');
-    });
-
-    on($('autoForm'), 'submit', async (e) => {
-      e.preventDefault();
-      const editId = $('autoEditId').value;
-      const scheduleType = $('autoScheduleType').value;
-      const intervalVal = $('autoInterval').value;
-      const intervalMinutes = intervalVal === 'custom' ? Number($('autoCustomMinutes').value) : Number(intervalVal);
-      const now = new Date().toISOString();
-
-      const automation = {
-        id: editId || `auto_${Date.now()}`,
-        name: $('autoName').value.trim(),
-        instructions: $('autoInstructions').value.trim(),
-        scheduleType,
-        intervalMinutes,
-        enabled: true,
-        paused: false,
-        status: 'queued',
-        nextRunAt: now,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      if (editId) {
-        await cfApi(`/api/frontend/automations/${editId}`, {
-          method: 'PUT',
-          body: JSON.stringify(automation),
-        });
-      } else {
-        await cfApi('/api/frontend/automations', {
-          method: 'POST',
-          body: JSON.stringify(automation),
-        });
-      }
-      $('autoModal').classList.remove('open');
-      syncAll();
-    });
-
-    // Chat selector
-    on($('chatAutoSelect'), 'change', (e) => {
-      state.activeAutoId = e.target.value;
-      loadAutomationDetails(state.activeAutoId);
-    });
-
-    on($('chatRunBtn'), 'click', () => state.activeAutoId && window.__vexa.runNow(state.activeAutoId));
-    on($('chatPauseBtn'), 'click', () => state.activeAutoId && window.__vexa.togglePause(state.activeAutoId));
-    on($('chatStopBtn'), 'click', () => state.activeAutoId && window.__vexa.togglePause(state.activeAutoId));
-
-    // Chat form
-    on($('chatForm'), 'submit', async (e) => {
-      e.preventDefault();
-      const input = $('chatInput');
-      const text = input.value.trim();
-      if (!text || !state.activeAutoId) return;
-      await sendChatMessage(text);
-    });
-
-    // Settings
-    const cfgGatewayUrl = $('cfgGatewayUrl');
-    const cfgProvider = $('cfgProvider');
-    const cfgKeyRotation = $('cfgKeyRotation');
-
-    async function loadSettings() {
-      try {
-        const data = await cfApi('/api/frontend/settings');
-        const s = data.settings || {};
-        if (cfgGatewayUrl) cfgGatewayUrl.value = s.gatewayUrl || '';
-        if (cfgProvider) cfgProvider.value = s.provider || 'nvidia';
-        const cfgApiKeys = $('cfgApiKeys');
-        if (cfgApiKeys) cfgApiKeys.value = s.apiKeys || '';
-        if (cfgKeyRotation) cfgKeyRotation.checked = s.keyRotation !== false;
-        const cfgGitHubPat = $('cfgGitHubPat');
-        if (cfgGitHubPat) cfgGitHubPat.value = s.githubPat || '';
-        const cfgGitHubRepo = $('cfgGitHubRepo');
-        if (cfgGitHubRepo) cfgGitHubRepo.value = s.githubRepo || 'Joshbond123/VEXA';
-        const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
-        if (cfgCloudflareAccountId) cfgCloudflareAccountId.value = s.cloudflareAccountId || '';
-        const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
-        if (cfgCloudflareApiToken) cfgCloudflareApiToken.value = s.cloudflareApiToken || '';
-        state.settings = s;
-      } catch (err) {
-        console.error('Failed to load settings:', err);
-      }
-    }
-
-    on($('settingsForm'), 'submit', async (e) => {
-      e.preventDefault();
-      const cfgGatewayUrl = $('cfgGatewayUrl');
-      const cfgProvider = $('cfgProvider');
-      const cfgApiKeys = $('cfgApiKeys');
-      const cfgKeyRotation = $('cfgKeyRotation');
-      const cfgGitHubPat = $('cfgGitHubPat');
-      const cfgGitHubRepo = $('cfgGitHubRepo');
-      const cfgCloudflareAccountId = $('cfgCloudflareAccountId');
-      const cfgCloudflareApiToken = $('cfgCloudflareApiToken');
-
-      const settings = {
-        gatewayUrl: (cfgGatewayUrl ? cfgGatewayUrl.value : '').trim(),
-        provider: (cfgProvider ? cfgProvider.value : 'nvidia'),
-        apiKeys: (cfgApiKeys ? cfgApiKeys.value : '').trim(),
-        keyRotation: cfgKeyRotation ? cfgKeyRotation.checked : true,
-        githubPat: (cfgGitHubPat ? cfgGitHubPat.value : '').trim(),
-        githubRepo: (cfgGitHubRepo ? cfgGitHubRepo.value : 'Joshbond123/VEXA').trim(),
-        cloudflareAccountId: (cfgCloudflareAccountId ? cfgCloudflareAccountId.value : '').trim(),
-        cloudflareApiToken: (cfgCloudflareApiToken ? cfgCloudflareApiToken.value : '').trim(),
-      };
-      try {
-        await cfApi('/api/frontend/settings', {
-          method: 'POST',
-          body: JSON.stringify(settings),
-        });
-        state.settings = settings;
-        const msg = $('settingsSavedMsg');
-        if (msg) { msg.textContent = 'Saved to Cloudflare'; setTimeout(() => { msg.textContent = ''; }, 2500); }
-        checkEmulatorHealth();
-        renderProviderStatus();
-        toast('Settings saved to Cloudflare KV', 'ok');
-      } catch (err) {
-        toast(`Failed to save settings: ${err.message}`, 'err');
-      }
-    });
-
-    // Connection test button handlers
-    on($('btnTestAI'), 'click', testAIConnection);
-    on($('btnTestGitHub'), 'click', testGitHubConnection);
-    on($('btnTestCloudflare'), 'click', testCloudflareConnection);
-
-    setupPhoneInteraction();
-    loadSettings();
-    syncAll();
-    setInterval(checkEmulatorHealth, 20000);
+  async function init() {
+    bind();
+    setupPhoneInput();
+    renderWelcome();
+    await loadAutomations();
+    await refreshStatus();
+    state.statusTimer = setInterval(refreshStatus, STATUS_POLL_MS);
   }
 
   document.addEventListener('DOMContentLoaded', init);
