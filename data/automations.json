@@ -41,10 +41,10 @@
     "paused": false,
     "status": "failed",
     "nextRunAt": null,
-    "lastRunAt": "2026-11-18T00:09:40.827Z",
-    "runCount": 2,
+    "lastRunAt": "2026-11-18T00:15:09.794Z",
+    "runCount": 3,
     "createdAt": "2026-11-18T00:00:00.000Z",
-    "updatedAt": "2026-11-18T00:09:40.827Z",
+    "updatedAt": "2026-11-18T00:15:09.794Z",
     "lastRunStatus": "failed"
   }
 ]

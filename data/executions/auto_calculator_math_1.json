@@ -1,5 +1,21 @@
 [
   {
+    "id": "exec_1794960907544_qqkgg",
+    "automationId": "auto_calculator_math_1",
+    "status": "failed",
+    "startedAt": "2026-11-18T00:15:07.544Z",
+    "finishedAt": "2026-11-18T00:15:09.794Z",
+    "taskReceived": "Open the Calculator app on the Android device, compute 127 multiplied by 83, take a screenshot of the result, and report the exact number shown on screen.",
+    "actionsPerformed": [],
+    "appsInteracted": [],
+    "observedResults": "",
+    "outcomeAchieved": false,
+    "failures": "Screenshot failed: HTTP 404",
+    "checkpoints": [],
+    "nextExecutionScheduled": null,
+    "resuming": false
+  },
+  {
     "id": "exec_1794960578952_vzgcz",
     "automationId": "auto_calculator_math_1",
     "status": "failed",
