@@ -138,6 +138,39 @@ function recoveryAppFor(instructions) {
   return 'Play Store';
 }
 
+
+/* ------------------------------------------------------------------ action normalization */
+/**
+ * Parse an action the model returned as a single string ("tap(540,1377)",
+ * "launch(Calculator)") into a clean action plus parameters. The suffix must
+ * always be stripped: the gateway rejects an action name that still carries
+ * its arguments ("Invalid action: tap(540,1377)"), so the phone never moved.
+ */
+function normalizeDecisionAction(decision, instructions) {
+  if (!decision.action || typeof decision.action !== 'string') return decision;
+  const m = decision.action.match(/^(\w+)\s*\((.*)\)$/);
+  if (!m) return decision;
+  const parsedAction = m[1];
+  const parsedArgs = m[2].trim();
+  decision.action = parsedAction;
+  if (parsedAction === 'tap' || parsedAction === 'swipe') {
+    const coords = parsedArgs.split(',').map((c) => Number(c.trim()));
+    if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+      decision.x = coords[0];
+      decision.y = coords[1];
+    }
+  } else if (parsedAction === 'launch') {
+    // Reject coordinate-like args (e.g. "0,0") and "undefined" variants.
+    const looksLikeCoords = /^\d+\s*,\s*\d+$/.test(parsedArgs);
+    const target = (looksLikeCoords || parsedArgs === 'undefined' || parsedArgs === 'undefined,undefined' || !parsedArgs)
+      ? recoveryAppFor(instructions)
+      : parsedArgs;
+    decision.text = target;
+    decision.app = target;
+  }
+  return decision;
+}
+
 /* ------------------------------------------------------------------ claim verification */
 /**
  * Check a value the agent claims it produced against the live UI tree. Only
@@ -599,38 +632,7 @@ async function runAutomation(automation, emulator) {
         // --- NORMALIZE MALFORMED AI ACTIONS ---
         // AI sometimes returns combined strings like "tap(151,664)" or "launch(com.android.vending)"
         // Parse them into proper action + params
-        if (decision.action && typeof decision.action === 'string') {
-          const actionMatch = decision.action.match(/^(\w+)\((.+)\)$/);
-          if (actionMatch) {
-            const parsedAction = actionMatch[1];
-            const parsedArgs = actionMatch[2];
-            // Only override if the current action doesn't already have proper x/y
-            // Normalize malformed action strings like "launch(undefined,undefined)"
-            // regardless of what's in text/app fields — they'll be overwritten
-            if (!decision.x && !decision.y) {
-              if (parsedAction === 'tap' || parsedAction === 'swipe') {
-                const coords = parsedArgs.split(',').map(c => Number(c.trim()));
-                if (coords.length >= 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
-                  console.warn(`Normalizing malformed action "${decision.action}" → tap(${coords[0]},${coords[1]})`);
-                  decision.action = parsedAction;
-                  decision.x = coords[0];
-                  decision.y = coords[1];
-                }
-              } else if (parsedAction === 'launch') {
-                const targetPkg = parsedArgs.trim();
-                // Reject coordinate-like args (e.g. "0,0", "540,1200") and "undefined" variants.
-                const looksLikeCoords = /^\d+,\d+$/.test(targetPkg);
-                const pkg = (looksLikeCoords || targetPkg === 'undefined' || targetPkg === 'undefined,undefined' || !targetPkg)
-                  ? recoveryAppFor(automation.instructions)
-                  : targetPkg;
-                console.warn(`Normalizing malformed action "${decision.action}" → launch(${pkg})`);
-                decision.action = parsedAction;
-                decision.text = pkg;
-                decision.app = pkg;
-              }
-            }
-          }
-        }
+        normalizeDecisionAction(decision, automation.instructions);
 
         // Ensure a launch always carries a target. Do NOT force a package: a
         // human app name ("Calculator") is resolved to the right package by the
@@ -950,7 +952,7 @@ async function main() {
 }
 
 // Exported for unit tests; importing this module must not start the agent loop.
-export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor };
+export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction };
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {

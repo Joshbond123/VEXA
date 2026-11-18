@@ -9,7 +9,7 @@
  * Run: node tests/test_runner_helpers.mjs
  */
 import assert from 'node:assert/strict';
-import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor } from '../agent/runner.mjs';
+import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction } from '../agent/runner.mjs';
 
 let passed = 0;
 function test(name, fn) {
@@ -98,6 +98,34 @@ test('recoveryAppFor returns a launchable name, never a package', () => {
   assert.equal(recoveryAppFor('Open Settings and check the Android version'), 'Settings');
   assert.equal(recoveryAppFor('Install Google Keep from the Play Store'), 'Play Store');
   assert.ok(!recoveryAppFor('open the calculator').includes('.'), 'must be a name the device can resolve');
+});
+
+test('normalizeDecisionAction strips the suffix even when x/y are also set', () => {
+  // Regression: the model returned action "tap(540,1377)" AND x/y, so the old
+  // guard (only run when x/y were empty) left the suffix on and the gateway
+  // rejected every step with 'Invalid action: tap(540,1377)'.
+  const d = normalizeDecisionAction({ action: 'tap(540,1377)', x: 540, y: 1377 }, 'open calculator');
+  assert.equal(d.action, 'tap');
+  assert.equal(d.x, 540);
+  assert.equal(d.y, 1377);
+});
+
+test('normalizeDecisionAction parses launch(Calculator) into a name', () => {
+  const d = normalizeDecisionAction({ action: 'launch(Calculator)' }, 'open calculator');
+  assert.equal(d.action, 'launch');
+  assert.equal(d.text, 'Calculator');
+  assert.ok(!d.text.includes('.'), 'a name, not a package');
+});
+
+test('normalizeDecisionAction rejects coordinate-like launch args', () => {
+  const d = normalizeDecisionAction({ action: 'launch(0,0)' }, 'open calculator');
+  assert.equal(d.action, 'launch');
+  assert.equal(d.text, 'Calculator');
+});
+
+test('normalizeDecisionAction leaves a clean action untouched', () => {
+  const d = normalizeDecisionAction({ action: 'home' }, 'x');
+  assert.equal(d.action, 'home');
 });
 
 console.log(`\n${passed} passed, 0 failed`);
