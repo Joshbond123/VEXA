@@ -75,4 +75,29 @@ await test('GET /api/frontend/settings tolerates an empty KV (no crash)', async 
   assert.ok(!data.settings.hasApiKey, 'hasApiKey must be falsy when nothing is stored');
 });
 
+await test('saving a non-secret field preserves the stored API key', async () => {
+  // Regression: the handler wrote apiKeyEncrypted from the request body only,
+  // so saving e.g. the repo name blanked the key and the agent then failed with
+  // "No API key configured".
+  const kv = createKv();
+  const env2 = { CONFIG_KV: kv, DB: {} };
+  await handleFrontend(post({ apiKeys: 'nvapi-secret', githubRepo: 'Joshbond123/VEXA' }), env2, {}, null, corsHeaders);
+  assert.ok(JSON.parse(kv.store.get('settings_config')).apiKeyEncrypted, 'key stored after first save');
+
+  await handleFrontend(post({ provider: 'nvidia', githubRepo: 'Joshbond123/VEXA' }), env2, {}, null, corsHeaders);
+  const after = JSON.parse(kv.store.get('settings_config'));
+  assert.equal(after.apiKeyEncrypted, 'nvapi-secret', 'key must survive a save that omits it');
+
+  const res = await handleFrontend(get(), env2, {}, null, corsHeaders);
+  assert.equal((await res.json()).settings.hasApiKey, true);
+});
+
+await test('saving a non-secret field preserves the stored GitHub PAT', async () => {
+  const kv = createKv();
+  const env2 = { CONFIG_KV: kv, DB: {} };
+  await handleFrontend(post({ githubPat: 'ghp_secret' }), env2, {}, null, corsHeaders);
+  await handleFrontend(post({ provider: 'openai' }), env2, {}, null, corsHeaders);
+  assert.equal(JSON.parse(kv.store.get('settings_config')).githubPatEncrypted, 'ghp_secret');
+});
+
 console.log(`\n${passed} passed, 0 failed`);

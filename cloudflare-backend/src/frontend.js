@@ -428,17 +428,27 @@ Only include the ACTION line when you are actually taking a step on the device. 
   if (path === '/api/frontend/settings' && method === 'POST') {
     try {
       const body = await request.json();
+      // Merge with the stored config so a save that omits a secret preserves
+      // it. Overwriting with '' here silently deleted the API key whenever the
+      // operator saved an unrelated field (e.g. the repo name), which then
+      // broke the agent with "No API key configured".
+      let prev = {};
+      try {
+        const raw = await env.CONFIG_KV.get('settings_config');
+        if (raw) prev = JSON.parse(raw);
+      } catch { /* start from an empty config */ }
+
       const settings = {
-        gatewayUrl: body.gatewayUrl || '',
-        provider: body.provider || 'nvidia',
-        model: body.model || 'nemotron-3.5-super-vl-120b-a12b',
+        gatewayUrl: body.gatewayUrl ?? prev.gatewayUrl ?? '',
+        provider: body.provider || prev.provider || 'nvidia',
+        model: body.model || prev.model || 'nemotron-3.5-super-vl-120b-a12b',
         // The frontend posts `apiKeys` (one per line); older clients used `apiKey`.
-        apiKeyEncrypted: body.apiKeys || body.apiKey || '',
-        githubPatEncrypted: body.githubPat || '',
-        githubRepo: body.githubRepo || '',
-        cloudflareAccountId: body.cloudflareAccountId || '',
-        cloudflareApiTokenEncrypted: body.cloudflareApiToken || '',
-        keyRotation: body.keyRotation !== false,
+        apiKeyEncrypted: body.apiKeys || body.apiKey || prev.apiKeyEncrypted || '',
+        githubPatEncrypted: body.githubPat || prev.githubPatEncrypted || '',
+        githubRepo: body.githubRepo ?? prev.githubRepo ?? '',
+        cloudflareAccountId: body.cloudflareAccountId ?? prev.cloudflareAccountId ?? '',
+        cloudflareApiTokenEncrypted: body.cloudflareApiToken || prev.cloudflareApiTokenEncrypted || '',
+        keyRotation: body.keyRotation !== undefined ? body.keyRotation !== false : prev.keyRotation !== false,
       };
       await env.CONFIG_KV.put('settings_config', JSON.stringify(settings), { expirationTtl: 86400 * 30 });
 
