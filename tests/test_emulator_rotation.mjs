@@ -101,6 +101,19 @@ await test('boot timeouts are numeric, not the label string', async () => {
   }
 });
 
+await test('realism never disables adb, the agent control path', async () => {
+  // Run 47 booted the Play image in 70s, then `settings put global adb_enabled 0`
+  // dropped adbd and left the device `offline`, so the session step and the Play
+  // Store check both failed on a device that was working seconds earlier.
+  const s = readFileSync(join(ROOT, 'android-emulator/real-device-profile.sh'), 'utf8');
+  const active = s
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
+  assert.ok(!/adb_enabled\s+0/.test(active), 'the script must never turn adb off');
+  assert.ok(!/stop adbd/.test(active), 'the script must never stop adbd');
+});
+
 await test('realism script does not claim to defeat Play Integrity', async () => {
   const s = readFileSync(join(ROOT, 'android-emulator/real-device-profile.sh'), 'utf8');
   // Honesty guard: the script may tune settings, but it must not pretend to

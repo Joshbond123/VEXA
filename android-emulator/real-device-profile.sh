@@ -54,12 +54,15 @@ fi
 # --------------------------------------------------- developer-mode tells off
 # These are the visible artefacts that no phone in a shop has. They are ordinary
 # settings, so they work on a production image where `adb root` does not.
+#
+# Deliberately NOT touched: `adb_enabled`. Setting it to 0 turns USB debugging
+# off, which drops adbd and leaves the device `offline` — that is how run 47 lost
+# the emulator one step after it booted. The agent's entire control path is adb,
+# so this setting must stay on. Developer options being visible is a far smaller
+# realism cost than losing the device.
 log "clearing developer-mode tells"
-adb shell settings put global development_settings_enabled 0 >/dev/null 2>&1 || true
 adb shell settings put system pointer_location 0 >/dev/null 2>&1 || true
 adb shell settings put system show_touches 0 >/dev/null 2>&1 || true
-adb shell settings put system show_touches 0 >/dev/null 2>&1 || true
-adb shell settings put global adb_enabled 0 >/dev/null 2>&1 || true
 adb shell settings put secure immersive_mode_confirmations confirmed >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------- consumer defaults
@@ -99,5 +102,16 @@ adb shell dumpsys sensorservice 2>/dev/null | grep -iE "^[0-9]+\)|sensor list" |
 adb shell input keyevent 82 >/dev/null 2>&1 || true   # dismiss keyguard
 adb shell wm dismiss-keyguard >/dev/null 2>&1 || true
 
-log "final: $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r') / Android $(adb shell getprop ro.build.version.release 2>/dev/null | tr -d '\r') / $(adb shell wm size 2>/dev/null | grep -oE '[0-9]+x[0-9]+')"
+# If the device went offline here, everything downstream fails with a confusing
+# "no adb device" error. Fail loudly at the cause instead.
+if ! adb devices | grep -q "emulator-5554[[:space:]]*device"; then
+  log "ERROR: device is not in 'device' state after profiling"
+  adb devices || true
+  exit 1
+fi
+
+FINAL_MODEL=$(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')
+FINAL_REL=$(adb shell getprop ro.build.version.release 2>/dev/null | tr -d '\r')
+FINAL_SIZE=$(adb shell wm size 2>/dev/null | tr -d '\r' | grep -oE '[0-9]+x[0-9]+' | head -1)
+log "final: model=${FINAL_MODEL:-unknown} android=${FINAL_REL:-unknown} size=${FINAL_SIZE:-unknown}"
 log "done"
