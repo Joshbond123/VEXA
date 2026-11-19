@@ -1,11 +1,11 @@
 {
   "gatewayUrl": "https://vexa-ai-agent.replyraven001.workers.dev",
   "status": "online",
-  "lastHeartbeat": "2026-11-19T15:11:16.459273+00:00",
+  "lastHeartbeat": "2026-11-19T22:56:01.374596+00:00",
   "deviceModel": "Pixel 7",
   "androidVersion": "14",
   "resolution": "1080x2400",
   "loggedInAccount": "preserved-session",
-  "activeRunId": "44551459579",
-  "updatedAt": "2026-11-19T15:11:16.459273+00:00"
+  "activeRunId": "44632096053",
+  "updatedAt": "2026-11-19T22:56:01.374596+00:00"
 }
