@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { runAgentTask, parseStep, uiLabels, uiElements, buildObservation, isSessionOnline, MAX_STEPS } from '../cloudflare-backend/src/agent-loop.js';
+import { runAgentTask, parseStep, uiLabels, uiElements, buildObservation, isSessionOnline, uiSignature, MAX_STEPS } from '../cloudflare-backend/src/agent-loop.js';
 
 /* ------------------------------------------------------------ fake device */
 
@@ -357,6 +357,75 @@ await test('the step cap is enforced and reported honestly', async () => {
   assert.equal(result.error, 'step limit');
   assert.equal(result.steps, MAX_STEPS);
   assert.match(result.answer, /step limit/);
+});
+
+/* ------------------------------------------- screen-change honesty */
+// A uiautomator dump of a Settings-like screen. Two dumps of the *same* screen
+// differ only in animation-driven attributes, exactly like a ripple repaint.
+const UI_SETTINGS = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.settings" bounds="[0,0][1080,2400]">
+<node index="1" text="Settings" resource-id="android:id/title" class="android.widget.TextView" package="com.android.settings" bounds="[48,200][400,280]" />
+<node index="2" text="Network &amp; internet" resource-id="" class="android.widget.TextView" package="com.android.settings" bounds="[48,400][600,470]" />
+<node index="3" text="Apps" resource-id="" class="android.widget.TextView" package="com.android.settings" bounds="[48,520][600,590]" />
+</node></hierarchy>`;
+
+const UI_SETTINGS_SAME_TEXT = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.settings" bounds="[0,0][1080,2400]">
+<node index="1" text="Settings" resource-id="android:id/title" class="android.widget.TextView" package="com.android.settings" bounds="[48,204][400,284]" />
+<node index="2" text="Network &amp; internet" resource-id="" class="android.widget.TextView" package="com.android.settings" bounds="[48,404][600,474]" />
+<node index="3" text="Apps" resource-id="" class="android.widget.TextView" package="com.android.settings" bounds="[48,524][600,594]" />
+</node></hierarchy>`;
+
+await test('uiSignature ignores repaints and tracks real navigation', async () => {
+  const a = uiSignature(Buffer.from(UI_SETTINGS).toString('base64'));
+  const b = uiSignature(Buffer.from(UI_SETTINGS_SAME_TEXT).toString('base64'));
+  assert.equal(a, b, 'a repaint with the same text is not a screen change');
+
+  const navigated = uiSignature(Buffer.from(UI_SETTINGS.replace('Apps', 'About phone')).toString('base64'));
+  assert.notEqual(a, navigated, 'new on-screen text is a real change');
+
+  assert.equal(uiSignature(null), null, 'no tree yields no signature');
+  assert.equal(uiSignature(Buffer.from('<hierarchy/>').toString('base64')), null);
+});
+
+await test('a repaint is reported as unchanged, not as a successful action', async () => {
+  // Reproduces the run where two Back presses repainted the status bar but left
+  // the screen identical, and each was logged "screen updated" — which told the
+  // agent its taps were landing when nothing had moved.
+  const device = createDevice({ startApp: 'Settings' });
+  device.state.uiHierarchy = Buffer.from(UI_SETTINGS).toString('base64');
+  const settleSameScreen = () => {
+    device.frameCount += 1;
+    device.state = {
+      ...device.state,
+      screenChecksum: `frame-${device.frameCount}`,
+      uiHierarchy: Buffer.from(UI_SETTINGS_SAME_TEXT).toString('base64'),
+      lastActionStatus: 'done',
+      lastActionResult: JSON.stringify({ success: true }),
+    };
+  };
+  device.claim = (action, clientId) => {
+    device.actions.push({ action, clientId });
+    device.state = { ...device.state, lastActionStatus: 'pending', lastActionClientId: clientId };
+    setImmediate(() => settleSameScreen());
+    return true;
+  };
+  const db = createDb(device, ONLINE_SESSION);
+  const askAi = scriptedAi([
+    'THOUGHT: go back\nACTION: {"action":"back"}',
+    'THOUGHT: still the same screen\nDONE: The screen did not change.',
+  ]);
+
+  const result = await runAgentTask({ DB: db }, {
+    conversationId: 'c_repaint', runId: 'r_repaint', task: 'go back', askAi, isCancelled: () => false,
+  });
+
+  const executed = result.events.filter((e) => e.title.includes('executed'));
+  assert.ok(executed.length > 0, 'actions were executed');
+  assert.ok(
+    executed.every((e) => e.detail.includes('screen unchanged')),
+    `repaints must be reported unchanged, got: ${executed.map((e) => e.detail).join(' | ')}`,
+  );
 });
 
 await test('every emitted event corresponds to real work and is ordered', async () => {

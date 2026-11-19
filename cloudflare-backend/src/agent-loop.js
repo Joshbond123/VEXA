@@ -159,6 +159,17 @@ export function uiLabels(uiHierarchy, limit = 70) {
 }
 
 /**
+ * Cheap fingerprint of what the screen actually offers: its rendered text plus
+ * element count. Used to tell a real navigation apart from a repaint.
+ */
+export function uiSignature(uiHierarchy) {
+  const elements = uiElements(uiHierarchy);
+  if (!elements.length) return null;
+  const text = elements.map((e) => e.label).join('\u0001');
+  return `${elements.length}:${text}`;
+}
+
+/**
  * Build the observation block handed to the model: each on-screen element with
  * the coordinate to tap, plus the live frame when one is attachable.
  */
@@ -396,6 +407,7 @@ export async function runAgentTask(env, ctx) {
 
     let outcome;
     const signatureBefore = state?.screenChecksum || null;
+    const uiBefore = uiSignature(state?.uiHierarchy);
     try {
       outcome = await executeAction(env, action, wrappedCtx);
     } catch (err) {
@@ -421,8 +433,18 @@ export async function runAgentTask(env, ctx) {
 
     // Only claim the screen moved when the checksum actually moved. Reporting
     // "screen updated" for a no-op action hid the fact that taps were missing.
+    //
+    // The checksum is not enough on its own: a ripple, a scroll animation, or a
+    // spinner repaints pixels without changing what the screen offers, so an
+    // action that did nothing could still look effective and the agent would
+    // repeat it. When the UI tree is available its text is the honest signal —
+    // it only changes when the screen actually offers something different — so
+    // require both. Without a UI tree, fall back to pixels alone.
     const signatureAfter = outcome.state?.screenChecksum || null;
-    const screenMoved = Boolean(signatureBefore && signatureAfter && signatureBefore !== signatureAfter);
+    const uiAfter = uiSignature(outcome.state?.uiHierarchy);
+    const pixelsMoved = Boolean(signatureBefore && signatureAfter && signatureBefore !== signatureAfter);
+    const uiMoved = Boolean(uiBefore && uiAfter && uiBefore !== uiAfter);
+    const screenMoved = uiBefore && uiAfter ? pixelsMoved && uiMoved : pixelsMoved;
     await emit(env.DB, wrappedCtx, {
       kind: 'tool',
       title: `Step ${step}: executed`,

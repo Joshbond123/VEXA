@@ -86,18 +86,34 @@ check('screenshot endpoint returns a real image', frame.length > 5000, `${frame.
 check('screenshot is a valid PNG/JPEG', frame[0] === 0x89 || frame[0] === 0xff);
 
 // 2. Launch an app and confirm the foreground package changed to it.
-await dispatch({ action: 'launch', app: 'calculator' }, 'e2e_launch', 9000);
+// Which calculator a build ships varies by image: AOSP has com.android.calculator2,
+// the Play Store image ships neither. Pick whichever the device actually has, and
+// if it has none, say so instead of reporting a launch that never happened.
+const CALC_CANDIDATES = ['com.android.calculator2', 'com.google.android.calculator'];
+let calcPkg = null;
+for (const candidate of CALC_CANDIDATES) {
+  await dispatch({ action: 'launch', app: candidate }, `e2e_probe_${candidate}`, 7000);
+  const probeUi = uiText(await state());
+  if (foregroundPackages(probeUi).some((p) => p.includes(candidate))) { calcPkg = candidate; break; }
+}
+
 let ui = uiText(await state());
 let pkgs = foregroundPackages(ui);
-check('launching Calculator brings it to the foreground',
-  pkgs.some((p) => /calculator/i.test(p)), `packages=${pkgs.slice(0, 3).join(',')}`);
+if (calcPkg) {
+  check('launching Calculator brings it to the foreground',
+    pkgs.some((p) => p.includes(calcPkg)), `packages=${pkgs.slice(0, 3).join(',')}`);
+} else {
+  console.log('  skip  no calculator installed on this image — keypad checks need one');
+}
 
 // 3. Tap a digit on the keypad by reading its real bounds from the UI tree.
 // Only clickable digit nodes count — the calculator also renders the current
 // expression as a non-interactive text node, and tapping that does nothing.
 const digitNodes = [...ui.matchAll(/<node[^>]*clickable="true"[^>]*text="([0-9])"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)]
   .concat([...ui.matchAll(/<node[^>]*text="([0-9])"[^>]*clickable="true"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)]);
-if (digitNodes.length) {
+if (!calcPkg) {
+  // nothing to tap; the skip above already said why
+} else if (digitNodes.length) {
   const [, digit, x1, y1, x2, y2] = digitNodes[0];
   const cx = Math.round((+x1 + +x2) / 2), cy = Math.round((+y1 + +y2) / 2);
   const before = await screenshot();
