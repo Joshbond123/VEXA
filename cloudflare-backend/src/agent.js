@@ -6,7 +6,7 @@
 import {
   getAutomations, getAutomation, upsertAutomation,
   saveExecution, saveChatMessage, getChats,
-  getSettings, upsertSettings, appendAgentEvent,
+  getSettings, upsertSettings, appendAgentEvent, getAccessToken,
 } from './database.js';
 
 export async function handleAgent(request, env, ctx, token, corsHeaders) {
@@ -16,8 +16,8 @@ export async function handleAgent(request, env, ctx, token, corsHeaders) {
 
   // Verify token
   if (token) {
-    const stored = await env.CONFIG_KV.get(`access_token:${token}`);
-    if (!stored) {
+    const data = await getAccessToken(env.DB, token);
+    if (!data) {
       return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders() });
     }
   }

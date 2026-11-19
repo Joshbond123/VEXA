@@ -47,6 +47,7 @@
     maxQualityHeight: 1080,
     streamAbort: null,
     activitySource: null,
+    runAbort: null,
   };
 
   /* ------------------------------------------------------------------ dom */
@@ -240,6 +241,17 @@
     state.streamTimer = setTimeout(async () => {
       await pullFrame();
       scheduleTick(state.pollMs);
+    }, delay);
+  }
+
+  // Coalesce frame refreshes requested by agent steps: several events can land
+  // within one poll interval, and only the final screen matters.
+  let frameRefreshTimer = null;
+  function scheduleFrameRefresh(delay = 400) {
+    if (frameRefreshTimer) return;
+    frameRefreshTimer = setTimeout(async () => {
+      frameRefreshTimer = null;
+      await pullFrame();
     }, delay);
   }
 
@@ -664,10 +676,21 @@
       btn.disabled = busy;
       btn.innerHTML = busy ? '<span class="spinner"></span>' : icon('i-send');
     }
+    const stop = $('chatStopBtn');
+    if (stop) stop.classList.toggle('hidden', !busy);
     const input = $('chatInput');
     if (input) input.disabled = busy;
   }
 
+  /**
+   * Run an autonomous task and stream its real steps into the chat.
+   *
+   * The previous implementation POSTed to /chat and waited for one JSON blob,
+   * so the UI sat on a spinner and then dumped a wall of text — no plan, no
+   * steps, no visibility. This consumes the SSE run stream and renders each
+   * activity frame as it arrives. Every frame comes from an event the backend
+   * actually wrote; the UI never fabricates a step.
+   */
   async function sendChat(text) {
     const msg = String(text || '').trim();
     if (!msg || state.chatBusy) return;
@@ -680,50 +703,158 @@
     if (suggest) suggest.classList.add('hidden');
 
     setChatBusy(true);
-    showTyping();
+    const runCard = showRunCard();
+    const abort = new AbortController();
+    state.runAbort = abort;
+
+    let finalText = '';
+    let sawDone = false;
 
     try {
-      const data = await api('/api/frontend/chat', {
+      const res = await fetch(`${API}/api/frontend/agent/run`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: abort.signal,
         body: JSON.stringify({
-          message: msg,
+          task: msg,
           conversationId: state.activeConversationId || null,
           automationId: state.activeAutoId || null,
           history: state.chat.slice(-8),
         }),
       });
-      clearTyping();
 
-      if (!data.ok) {
-        appendMessage('agent', `I couldn't reach the AI provider. ${data.error || ''}`.trim());
-        toast(data.error || 'AI request failed', 'err');
-      } else {
-        appendMessage('agent', data.reply);
-        state.chat.push({ role: 'agent', content: data.reply });
-        if (data.conversationId && data.conversationId !== state.activeConversationId) {
-          state.activeConversationId = data.conversationId;
-          loadConversations();
-        }
-        if (data.createdAutomation) {
-          // A real automation was created server-side; surface it and refresh the
-          // dashboard so it appears immediately.
-          appendMessage('system', `Automation created: ${data.createdAutomation.name} (${scheduleLabel(data.createdAutomation)})`);
-          toast('Automation created', 'ok');
-          await loadAutomations();
-        }
-        if (data.queuedAction) {
-          appendMessage('system', humanAction(data.queuedAction));
-          setTimeout(pullFrame, 1200);
-        }
+      if (!res.ok || !res.body) {
+        const detail = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}${detail ? ` ${detail.slice(0, 160)}` : ''}`);
+      }
+
+      await readSseStream(res.body, {
+        activity: (ev) => {
+          addRunStep(runCard, ev);
+          if (ev.kind === 'tool' || ev.kind === 'observe') scheduleFrameRefresh();
+        },
+        done: (d) => {
+          sawDone = true;
+          finalText = d.answer || '';
+          if (d.conversationId && d.conversationId !== state.activeConversationId) {
+            state.activeConversationId = d.conversationId;
+            loadConversations();
+          }
+          finishRunCard(runCard, d);
+        },
+        failed: (d) => {
+          finalText = `I couldn't complete that: ${d.error || 'unknown error'}`;
+          finishRunCard(runCard, { ok: false, error: d.error });
+        },
+      });
+
+      if (!sawDone && !finalText) finalText = 'The run ended without a final report.';
+      if (finalText) {
+        appendMessage('agent', finalText);
+        state.chat.push({ role: 'agent', content: finalText });
       }
     } catch (err) {
-      clearTyping();
-      appendMessage('agent', `Request failed: ${err.message}`);
-      toast(`Chat failed: ${err.message}`, 'err');
+      if (err.name === 'AbortError') {
+        appendMessage('system', 'Run stopped.');
+      } else {
+        appendMessage('agent', `Request failed: ${err.message}`);
+        toast(`Agent run failed: ${err.message}`, 'err');
+      }
+      finishRunCard(runCard, { ok: false, error: err.message });
     } finally {
+      state.runAbort = null;
       setChatBusy(false);
       const inp = $('chatInput');
       if (inp) inp.focus();
+      pullFrame();
+    }
+  }
+
+  /**
+   * Parse a Server-Sent Events body and dispatch each named event.
+   * Read incrementally so frames render as they arrive rather than after the
+   * whole run finishes.
+   */
+  async function readSseStream(body, handlers) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // Frames are separated by a blank line.
+      let split;
+      while ((split = buffer.indexOf('\n\n')) !== -1) {
+        const chunk = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+        let event = 'message';
+        const dataLines = [];
+        for (const line of chunk.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) continue;
+        let payload;
+        try { payload = JSON.parse(dataLines.join('\n')); } catch { continue; }
+        const handler = handlers[event];
+        if (handler) handler(payload);
+      }
+    }
+  }
+
+  /** Card that holds the live step list for one run. */
+  function showRunCard() {
+    const box = $('chatMessages');
+    if (!box) return null;
+    const welcome = box.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+    const el = document.createElement('div');
+    el.className = 'msg agent';
+    el.innerHTML = `<div class="msg-avatar">${icon('i-sparkle', 'ic')}</div>
+      <div class="run-card">
+        <div class="run-head"><span class="run-dot busy"></span><span class="run-title">Working…</span></div>
+        <div class="run-steps"></div>
+      </div>`;
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+    return el;
+  }
+
+  /** Append one real step to the run card. */
+  function addRunStep(card, ev) {
+    if (!card) return;
+    const steps = card.querySelector('.run-steps');
+    if (!steps) return;
+    const row = document.createElement('div');
+    row.className = `run-step ${ev.status || 'info'}`;
+    row.innerHTML = `<span class="rs-ic">${runStepIcon(ev.kind)}</span>
+      <span class="rs-body"><span class="rs-title">${esc(ev.title || '')}</span>${
+        ev.detail ? `<span class="rs-detail">${esc(String(ev.detail).slice(0, 400))}</span>` : ''
+      }</span>`;
+    steps.appendChild(row);
+    const box = $('chatMessages');
+    if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  function runStepIcon(kind) {
+    if (kind === 'plan') return icon('i-bolt', 'ic');
+    if (kind === 'observe') return icon('i-eye', 'ic');
+    if (kind === 'tool') return icon('i-phone', 'ic');
+    if (kind === 'verify') return icon('i-check', 'ic');
+    if (kind === 'error' || kind === 'cancelled') return icon('i-alert', 'ic');
+    return icon('i-sparkle', 'ic');
+  }
+
+  function finishRunCard(card, d) {
+    if (!card) return;
+    const dot = card.querySelector('.run-dot');
+    const title = card.querySelector('.run-title');
+    if (dot) dot.className = `run-dot ${d.ok ? 'online' : 'offline'}`;
+    if (title) {
+      title.textContent = d.ok
+        ? `Done${d.actions != null ? ` · ${d.actions} action${d.actions === 1 ? '' : 's'}` : ''}`
+        : (d.error ? `Stopped: ${d.error}` : 'Stopped');
     }
   }
 
@@ -1243,6 +1374,12 @@
     });
 
     on($('chatForm'), 'submit', (e) => { e.preventDefault(); sendChat($('chatInput').value); });
+    on($('chatStopBtn'), 'click', () => {
+      if (state.runAbort) {
+        state.runAbort.abort();
+        toast('Stopping the run…', 'info');
+      }
+    });
     on($('chatInput'), 'input', (e) => autoGrow(e.target));
     on($('chatInput'), 'keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat($('chatInput').value); }

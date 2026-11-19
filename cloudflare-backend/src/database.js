@@ -46,6 +46,10 @@ export async function initDatabase(db) {
   // are only ever written by the runtime that performed the action — never
   // fabricated by the frontend.
   await db.exec(`CREATE TABLE IF NOT EXISTS agent_events (id TEXT PRIMARY KEY, conversation_id TEXT, automation_id TEXT, execution_id TEXT, kind TEXT NOT NULL, title TEXT, detail TEXT, status TEXT DEFAULT 'info', seq INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  // Access tokens: D1 is the source of truth. KV writes are capped (1,000/day on
+  // this plan) and a 429 there silently logged users out; a D1 row cannot be
+  // rate-limited away. Existing KV tokens are carried over on boot.
+  await db.exec(`CREATE TABLE IF NOT EXISTS access_tokens (token TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_events_conversation ON agent_events(conversation_id, seq)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_events_automation ON agent_events(automation_id, seq)`);
   // One-time carry-over of any messages written to the old table.
@@ -57,6 +61,58 @@ export async function initDatabase(db) {
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_executions_created_at ON executions(created_at)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_automations_status ON automations(status)`);
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_emulator_sessions_status ON emulator_sessions(status)`);
+}
+
+/**
+ * Persist an access token. `payload` is the JSON-serialisable token record
+ * ({ type, userId, email, ... }) that used to be written to KV.
+ */
+export async function createAccessToken(db, token, payload, { ttlSeconds = 86400 * 30 } = {}) {
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+  await db.prepare(
+    `INSERT INTO access_tokens (token, payload, expires_at) VALUES (?, ?, ?)
+     ON CONFLICT(token) DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at`
+  ).bind(token, JSON.stringify(payload), expiresAt).run();
+  return payload;
+}
+
+/** Look up an unexpired access token; returns the parsed payload or null. */
+export async function getAccessToken(db, token) {
+  if (!token) return null;
+  const row = await db.prepare('SELECT payload, expires_at FROM access_tokens WHERE token = ?').bind(token).first();
+  if (!row) return null;
+  if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return null;
+  try {
+    return JSON.parse(row.payload);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Carry KV-stored tokens into D1 once. Idempotent: existing rows are left alone.
+ * KV listing is a read (not a write) so this costs no write budget.
+ */
+export async function migrateTokensFromKv(db, kv) {
+  if (!db || !kv || typeof kv.list !== 'function') return { migrated: 0 };
+  let migrated = 0;
+  let cursor;
+  do {
+    const page = await kv.list({ prefix: 'access_token:', cursor });
+    for (const key of page.keys || []) {
+      const raw = await kv.get(key.name);
+      if (!raw) continue;
+      const token = key.name.slice('access_token:'.length);
+      try {
+        await db.prepare(
+          `INSERT OR IGNORE INTO access_tokens (token, payload, expires_at) VALUES (?, ?, ?)`
+        ).bind(token, raw, new Date(Date.now() + 86400 * 30 * 1000).toISOString()).run();
+        migrated += 1;
+      } catch { /* row already present */ }
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return { migrated };
 }
 
 export async function getAutomations(db) {
@@ -181,6 +237,27 @@ function safeParseArray(value) {
 export async function getEmulatorSession(db) {
   const result = await db.prepare('SELECT * FROM emulator_sessions ORDER BY updated_at DESC LIMIT 1').first();
   return result ? snakeToCamel(result) : null;
+}
+
+/**
+ * Refresh only the heartbeat timestamp of the emulator session.
+ *
+ * A heartbeat is a liveness ping, not a state change, so it must not rewrite the
+ * whole row (or the KV mirror). The UPDATE is skipped when the stored beat is
+ * younger than `minIntervalMs` — the emulator beats every 30s and the UI treats
+ * anything under 5 minutes as online, so a 60s floor loses no freshness while
+ * cutting the write rate in half.
+ *
+ * @returns {Promise<boolean>} true when a write happened
+ */
+export async function touchEmulatorHeartbeat(db, { minIntervalMs = 60 * 1000 } = {}) {
+  const now = new Date().toISOString();
+  const cutoff = new Date(Date.now() - minIntervalMs).toISOString();
+  const res = await db.prepare(
+    `UPDATE emulator_sessions SET last_heartbeat = ?, updated_at = ?
+     WHERE id = 'default' AND (last_heartbeat IS NULL OR last_heartbeat < ?)`
+  ).bind(now, now, cutoff).run();
+  return (res?.meta?.changes || 0) > 0;
 }
 
 export async function upsertEmulatorSession(db, session) {

@@ -2,6 +2,8 @@
  * VEXA Durable Objects - Live Emulator Session Management
  */
 
+import { kvPutJson } from './kv.js';
+
 export class EmulatorSession {
   constructor(state, env) {
     this.state = state;
@@ -41,9 +43,12 @@ export class EmulatorSession {
           ).run();
         }
 
-        // Cache in KV
+        // Cache in KV (deduped + throttled by the shared wrapper).
         if (this.env.SESSION_KV) {
-          await this.env.SESSION_KV.put('emulator:default', JSON.stringify(this.emulatorData), { expirationTtl: 3600 });
+          await kvPutJson(this.env.SESSION_KV, 'emulator:default', this.emulatorData, {
+            expirationTtl: 3600,
+            minIntervalMs: 60 * 60 * 1000,
+          });
         }
 
         return Response.json({ ok: true, message: 'Emulator registered' });
@@ -59,9 +64,9 @@ export class EmulatorSession {
           this.emulatorData.lastHeartbeat = new Date().toISOString();
           this.emulatorData.status = 'online';
         }
-        if (this.env.SESSION_KV && this.emulatorData) {
-          await this.env.SESSION_KV.put('emulator:default', JSON.stringify(this.emulatorData), { expirationTtl: 3600 });
-        }
+        // No KV write here. The Durable Object already holds the live session in
+        // memory and mirrors it to D1 on register; writing the cache on every
+        // heartbeat is what pushed the account over the daily KV write cap.
         return Response.json({ ok: true });
       } catch (err) {
         return Response.json({ error: err.message }, { status: 500 });

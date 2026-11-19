@@ -10,7 +10,8 @@
  *   - Agent runner reads screenshots → from D1 device_state
  */
 
-import { upsertEmulatorSession, getEmulatorSession, upsertDeviceState, getDeviceState, claimDeviceAction } from './database.js';
+import { upsertEmulatorSession, getEmulatorSession, upsertDeviceState, getDeviceState, claimDeviceAction, touchEmulatorHeartbeat, getAccessToken } from './database.js';
+import { kvPutJson, kvGetJson } from './kv.js';
 import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
 
 export async function handleEmulator(request, env, ctx, token, corsHeaders) {
@@ -52,8 +53,14 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
 
       await upsertEmulatorSession(env.DB, session);
 
-      // Also cache in KV for fast access
-      await env.SESSION_KV.put('emulator:default', JSON.stringify(session), { expirationTtl: 3600 });
+      // KV is a read-through cache only. Registration is rare, so it may write,
+      // but it goes through the shared wrapper so a 429 can never fail a
+      // registration (D1 already holds the session).
+      await kvPutJson(env.SESSION_KV, 'emulator:default', session, {
+        expirationTtl: 3600,
+        minIntervalMs: 0,
+        force: true,
+      });
 
       // Initialize device state with no pending action and no screenshot
       await upsertDeviceState(env.DB, {
@@ -79,11 +86,24 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
       const body = await request.json();
       const { status, deviceModel, androidVersion, resolution, activeRunId } = body;
 
+      // A heartbeat is a liveness signal, not a state change. D1 owns the
+      // session, so the row is only rewritten when the reported identity
+      // actually changed, or when the stored beat is older than the heartbeat
+      // write interval. The previous code rewrote the whole row — and the whole
+      // KV mirror — on every 30s beat, which is what exhausted the KV daily cap.
       const existing = await getEmulatorSession(env.DB);
+      const nextStatus = status || 'online';
+      const identityChanged = !existing
+        || existing.status !== nextStatus
+        || (deviceModel && existing.deviceModel !== deviceModel)
+        || (resolution && existing.resolution !== resolution)
+        || (androidVersion && existing.androidVersion !== androidVersion)
+        || (activeRunId && existing.activeRunId !== activeRunId);
+
       const session = {
         id: 'default',
         gatewayUrl: existing?.gatewayUrl || '',
-        status: status || 'online',
+        status: nextStatus,
         deviceModel: deviceModel || existing?.deviceModel || 'Pixel 7',
         androidVersion: androidVersion || existing?.androidVersion || '14',
         resolution: resolution || existing?.resolution || '1080x2400',
@@ -92,8 +112,18 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
         lastHeartbeat: new Date().toISOString(),
       };
 
-      await upsertEmulatorSession(env.DB, session);
-      await env.SESSION_KV.put('emulator:default', JSON.stringify(session), { expirationTtl: 3600 });
+      if (existing && !identityChanged) {
+        await touchEmulatorHeartbeat(env.DB);
+      } else {
+        await upsertEmulatorSession(env.DB, session);
+        // Only a genuine identity change refreshes the cache; the 30s liveness
+        // beat never touches KV. A stale-but-valid cache entry is corrected by
+        // the D1 fallback in the read paths.
+        await kvPutJson(env.SESSION_KV, 'emulator:default', session, {
+          expirationTtl: 3600,
+          minIntervalMs: 60 * 60 * 1000,
+        });
+      }
 
       return Response.json({
         ok: true,
@@ -275,8 +305,8 @@ async function resolveDeviceResolution(env) {
 
 async function verifyAccessToken(token, env) {
   if (!token) return null;
-  const stored = await env.CONFIG_KV.get(`access_token:${token}`);
-  if (stored) return JSON.parse(stored);
+  const data = await getAccessToken(env.DB, token).catch(() => null);
+  if (data) return data;
   if (token === env.EMULATOR_ACCESS_TOKEN) {
     return { type: 'emulator', token };
   }

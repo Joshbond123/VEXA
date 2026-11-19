@@ -77,13 +77,9 @@ export async function handleSettings(request, env, ctx, token, corsHeaders) {
         cloudflareApiTokenEncrypted: body.cloudflareApiToken || existing.cloudflareApiTokenEncrypted || '',
         keyRotation: body.keyRotation ?? existing.keyRotation ?? true,
       };
+      // D1 only. The KV mirror was pure write-cap overhead: every read already
+      // prefers D1, and when KV returned 429 the mirror silently went stale.
       if (env.DB && typeof env.DB.prepare === 'function') await upsertSettings(env.DB, merged);
-      // Best-effort KV mirror; a save still succeeds on D1 when KV is full.
-      try {
-        await env.CONFIG_KV.put('settings_config', JSON.stringify(merged), { expirationTtl: 86400 * 30 });
-      } catch (kvErr) {
-        console.warn(`KV mirror skipped: ${kvErr.message}`);
-      }
 
       return Response.json({ ok: true, message: 'Settings saved successfully' }, { headers: corsHeaders() });
     } catch (err) {

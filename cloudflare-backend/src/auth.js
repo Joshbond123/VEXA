@@ -3,6 +3,8 @@
  * Handles login, token validation, and access control
  */
 
+import { createAccessToken, getAccessToken } from './database.js';
+
 export async function handleAuth(request, env, ctx, corsHeaders) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -31,11 +33,9 @@ export async function handleAuth(request, env, ctx, corsHeaders) {
         ).bind(userId, email, email.split('@')[0], new Date().toISOString(), new Date().toISOString()).run();
 
         const token = crypto.randomUUID();
-        await env.CONFIG_KV.put(`access_token:${token}`, JSON.stringify({
-          type: 'user',
-          userId,
-          email,
-        }), { expirationTtl: 86400 * 30 }); // 30 days
+        // Tokens live in D1: losing one logs a user out, and KV writes are
+        // capped at 1,000/day on this plan.
+        await createAccessToken(env.DB, token, { type: 'user', userId, email });
 
         return Response.json({
           ok: true,
@@ -45,11 +45,7 @@ export async function handleAuth(request, env, ctx, corsHeaders) {
       }
 
       const token = crypto.randomUUID();
-      await env.CONFIG_KV.put(`access_token:${token}`, JSON.stringify({
-        type: 'user',
-        userId: results.id,
-        email: results.email,
-      }), { expirationTtl: 86400 * 30 });
+      await createAccessToken(env.DB, token, { type: 'user', userId: results.id, email: results.email });
 
       return Response.json({
         ok: true,
@@ -71,12 +67,12 @@ export async function handleAuth(request, env, ctx, corsHeaders) {
         return Response.json({ error: 'Token required' }, { status: 400, headers: corsHeaders() });
       }
 
-      const stored = await env.CONFIG_KV.get(`access_token:${token}`);
-      if (!stored) {
+      const data = await getAccessToken(env.DB, token);
+      if (!data) {
         return Response.json({ valid: false }, { status: 401, headers: corsHeaders() });
       }
 
-      return Response.json({ valid: true, data: JSON.parse(stored) }, { headers: corsHeaders() });
+      return Response.json({ valid: true, data }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
     }
@@ -89,11 +85,11 @@ export async function handleAuth(request, env, ctx, corsHeaders) {
       return Response.json({ error: 'No token' }, { status: 401, headers: corsHeaders() });
     }
     const token = auth.substring(7);
-    const stored = await env.CONFIG_KV.get(`access_token:${token}`);
-    if (!stored) {
+    const data = await getAccessToken(env.DB, token);
+    if (!data) {
       return Response.json({ error: 'Invalid token' }, { status: 401, headers: corsHeaders() });
     }
-    return Response.json({ ok: true, user: JSON.parse(stored) }, { headers: corsHeaders() });
+    return Response.json({ ok: true, user: data }, { headers: corsHeaders() });
   }
 
   return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });

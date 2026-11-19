@@ -16,7 +16,8 @@ import { handleAgent } from './agent.js';
 import { handleFrontend } from './frontend.js';
 import { handleSettings } from './settings.js';
 import { EmulatorSession } from './durable-objects.js';
-import { initDatabase, getDeviceState, upsertDeviceState, listAgentEvents } from './database.js';
+import { initDatabase, getDeviceState, upsertDeviceState, listAgentEvents, getAccessToken, migrateTokensFromKv } from './database.js';
+import { kvGetJson, kvStats } from './kv.js';
 
 export { EmulatorSession };
 
@@ -39,6 +40,14 @@ let dbInitialized = false;
 async function ensureDB(env) {
   if (!dbInitialized) {
     await initDatabase(env.DB);
+    // Carry any tokens still held only in KV into D1. Idempotent and read-only
+    // against KV, so it costs no write budget and is safe on every cold start.
+    try {
+      const { migrated } = await migrateTokensFromKv(env.DB, env.CONFIG_KV);
+      if (migrated) console.log(`Migrated ${migrated} access token(s) from KV to D1`);
+    } catch (err) {
+      console.warn(`Token migration skipped: ${err.message}`);
+    }
     dbInitialized = true;
   }
 }
@@ -58,8 +67,13 @@ function getBearerToken(request) {
  * Verify VEXA access token (from settings or env)
  */
 async function verifyAccessToken(token, env) {
-  const stored = await env.CONFIG_KV.get(`access_token:${token}`);
-  if (stored) return JSON.parse(stored);
+  if (!token) return null;
+  // D1 is the source of truth; the KV read is a legacy fallback for a token
+  // issued before the migration and not yet carried over.
+  const data = await getAccessToken(env.DB, token).catch(() => null);
+  if (data) return data;
+  const legacy = await kvGetJson(env.CONFIG_KV, `access_token:${token}`);
+  if (legacy) return legacy;
   if (token === env.EMULATOR_ACCESS_TOKEN) {
     return { type: 'emulator', token };
   }
@@ -88,9 +102,16 @@ export default {
       return Response.json({
         ok: true,
         service: 'vexa-ai-agent',
-        version: '2.0.0',
+        version: '2.1.0',
         timestamp: new Date().toISOString(),
       }, { headers: corsHeaders() });
+    }
+
+    // GET /api/health/kv - KV write pressure and rate-limit visibility.
+    // Reports the writes this isolate actually performed, how many were avoided
+    // by dedupe/throttle, and whether any put() was rejected with 429. Read-only.
+    if (path === '/api/health/kv' && method === 'GET') {
+      return Response.json({ ok: true, ...kvStats() }, { headers: corsHeaders() });
     }
 
     // Initialize database
@@ -287,7 +308,7 @@ export default {
     if (path === '/api' || path === '/') {
       return Response.json({
         service: 'VEXA AI Agent Backend',
-        version: '2.0.0',
+        version: '2.1.0',
         endpoints: {
           health: '/api/health',
           publicHealth: '/api/public/health',

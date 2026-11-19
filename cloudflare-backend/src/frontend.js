@@ -11,8 +11,11 @@ import {
   listConversations, getConversation, upsertConversation,
   renameConversation, deleteConversation, touchConversation,
   appendAgentEvent, listAgentEvents,
+  getAccessToken,
 } from './database.js';
 import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
+import { kvGetJson, kvPutJson, kvStats } from './kv.js';
+import { runAgentTask } from './agent-loop.js';
 
 const REPO = 'Joshbond123/VEXA';
 const DEFAULT_WORKER_URL = 'https://vexa-ai-agent.replyraven001.workers.dev';
@@ -25,21 +28,20 @@ async function readSettings(env) {
       if (dbCfg) return dbCfg;
     } catch { /* fall through to KV */ }
   }
-  try {
-    const raw = await env.CONFIG_KV.get('settings_config');
-    if (raw) return JSON.parse(raw);
-  } catch { /* no settings stored yet */ }
-  return {};
+  return (await kvGetJson(env.CONFIG_KV, 'settings_config')) || {};
 }
 
-/** Write settings to D1 and mirror to KV best-effort (KV has a daily write cap). */
+/**
+ * Write settings to D1 only.
+ *
+ * Settings used to be mirrored into KV on every save. D1 is the source of truth
+ * and every read goes there first, so the mirror bought nothing but KV write
+ * budget — and on the free plan a busy settings page could exhaust the daily cap
+ * on its own. KV is now used only for the small, slow-moving caches where a miss
+ * is cheap (see kv.js).
+ */
 async function writeSettings(env, settings) {
   if (env.DB && typeof env.DB.prepare === 'function') await upsertSettings(env.DB, settings);
-  try {
-    await env.CONFIG_KV.put('settings_config', JSON.stringify(settings), { expirationTtl: 86400 * 30 });
-  } catch (kvErr) {
-    console.warn(`KV mirror skipped: ${kvErr.message}`);
-  }
 }
 
 /** Read the GitHub PAT from settings or the Worker secret. */
@@ -84,12 +86,16 @@ async function askAi(env, { messages, maxTokens = 1600 }) {
   const { provider, model, keys } = await resolveProviderConfig(env);
   if (!keys.length) return { ok: false, error: 'No API key configured. Add one in Settings.' };
 
+  // Keys are provider-specific: an NVIDIA key sent to OpenAI only earns a 401
+  // that buries the real error. Try the configured provider's keys, then fall
+  // back to the others only when no key was configured for them at all.
   const order = [provider, ...Object.keys(PROVIDER_ENDPOINTS).filter((p) => p !== provider)];
   let lastError = '';
   for (const pid of order) {
     const ep = PROVIDER_ENDPOINTS[pid];
     if (!ep) continue;
-    for (const key of keys) {
+    const providerKeys = pid === provider ? keys : [];
+    for (const key of providerKeys) {
       try {
         const res = await fetch(ep.url, {
           method: 'POST',
@@ -125,10 +131,12 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
   const path = url.pathname;
   const method = request.method;
 
-  // Verify token for write operations
+  // Verify token for write operations. A token is only required when the caller
+  // presents one; anonymous writes stay allowed so the public dashboard keeps
+  // working exactly as before.
   if (method !== 'GET' && token) {
-    const stored = await env.CONFIG_KV.get(`access_token:${token}`);
-    if (!stored) {
+    const data = await getAccessToken(env.DB, token);
+    if (!data) {
       return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders() });
     }
   }
@@ -361,6 +369,124 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
     }
   }
 
+  // POST /api/frontend/agent/run - run an autonomous task, streaming every real
+  // step back over Server-Sent Events.
+  //
+  // The legacy /chat endpoint answered in one blocking turn, so the agent could
+  // never react to the result of its own action. This route runs the full loop
+  // (observe → plan → act → verify) and emits one SSE frame per real step as it
+  // happens. Each frame is written to `agent_events` too, so a refresh can
+  // replay the run from history instead of losing it.
+  if (path === '/api/frontend/agent/run' && method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: 'invalid JSON body' }, { status: 400, headers: corsHeaders() });
+    }
+
+    const task = String(body.task || body.message || '').trim();
+    if (!task) {
+      return Response.json({ error: 'task required' }, { status: 400, headers: corsHeaders() });
+    }
+
+    // Resolve (or create) the conversation so the run has a stable home and its
+    // activity history survives a page refresh.
+    let conversationId = body.conversationId || null;
+    let conversation = conversationId ? await getConversation(env.DB, conversationId) : null;
+    if (!conversation) {
+      conversationId = conversationId || `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      conversation = await upsertConversation(env.DB, {
+        id: conversationId,
+        title: deriveTitle(task),
+        automationId: body.automationId || null,
+        status: 'active',
+      }) || { id: conversationId, title: deriveTitle(task) };
+    }
+
+    const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const encoder = new TextEncoder();
+    const state = { cancelled: false };
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        let closed = false;
+        const send = (event, data) => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch { closed = true; }
+        };
+        const finish = () => {
+          if (closed) return;
+          closed = true;
+          try { controller.close(); } catch { /* already closed */ }
+        };
+
+        send('open', { runId, conversationId, title: conversation.title });
+
+        try {
+          // Persist the user's instruction before the run starts, so the
+          // transcript reads correctly after a refresh even if the run dies.
+          await saveChatMessage(env.DB, {
+            id: `msg_${Date.now()}_u`,
+            automationId: conversationId,
+            role: 'user',
+            content: task,
+            timestamp: new Date().toISOString(),
+          });
+          await touchConversation(env.DB, conversationId);
+
+          const result = await runAgentTask(env, {
+            conversationId,
+            automationId: conversation.automationId || body.automationId || null,
+            runId,
+            task,
+            history: Array.isArray(body.history) ? body.history : [],
+            askAi: (args) => askAi(env, args),
+            isCancelled: () => state.cancelled,
+            onEvent: (ev) => send('activity', ev),
+          });
+
+          await saveChatMessage(env.DB, {
+            id: `msg_${Date.now()}_a`,
+            automationId: conversationId,
+            role: 'agent',
+            content: result.answer,
+            timestamp: new Date().toISOString(),
+          });
+          await touchConversation(env.DB, conversationId);
+
+          send('done', {
+            ok: result.ok,
+            answer: result.answer,
+            steps: result.steps,
+            actions: result.actions,
+            cancelled: result.cancelled,
+            error: result.error,
+            conversationId,
+            title: conversation.title,
+          });
+        } catch (err) {
+          send('failed', { error: err.message, conversationId });
+        } finally {
+          finish();
+        }
+      },
+      cancel() { state.cancelled = true; },
+    });
+
+    return new Response(stream, {
+      headers: {
+        ...corsHeaders(),
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  }
+
   // POST /api/frontend/chat - talk to the VEXA agent directly.
   // Replies are grounded in the live device frame when one is available, so the
   // agent can describe what is actually on screen and queue a device action.
@@ -408,9 +534,10 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
         }
       }
 
-      const session = (await env.SESSION_KV.get('emulator:default'))
-        ? JSON.parse(await env.SESSION_KV.get('emulator:default'))
-        : await getEmulatorSession(env.DB);
+      // One KV read, not two: the previous form fetched the key, discarded it,
+      // then fetched it again to parse.
+      const session = (await kvGetJson(env.SESSION_KV, 'emulator:default'))
+        || await getEmulatorSession(env.DB);
       const state = await getDeviceState(env.DB);
       const online = !!session && session.status === 'online'
         && (Date.now() - new Date(session.lastHeartbeat || 0).getTime()) < 5 * 60 * 1000;

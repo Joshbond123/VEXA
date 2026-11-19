@@ -524,6 +524,49 @@ body.device-gesture-active .device-stage-wrap { overscroll-behavior: none; }
   background: var(--surface); border-radius: 12px; padding: 10px 13px;
 }
 .composer-send { width: 40px; height: 40px; padding: 0; border-radius: 11px; flex-shrink: 0; }
+.composer-stop {
+  width: 40px; height: 40px; padding: 0; border-radius: 11px; flex-shrink: 0;
+  background: var(--danger-soft, rgba(239,68,68,0.12));
+  color: var(--danger, #ef4444);
+  border: 1px solid var(--danger-line, rgba(239,68,68,0.35));
+}
+.composer-stop:hover { background: var(--danger, #ef4444); color: #fff; }
+
+/* Live run card: the step list streamed from a real agent run. */
+.run-card {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 14px; padding: 12px 14px; min-width: 0; flex: 1;
+}
+.run-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.run-title { font-size: 0.86rem; font-weight: 650; color: var(--text); }
+.run-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.run-dot.busy { background: var(--accent); animation: pulse-dot 1.1s ease-in-out infinite; }
+.run-dot.online { background: var(--ok, #22c55e); }
+.run-dot.offline { background: var(--danger, #ef4444); }
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.run-steps { display: flex; flex-direction: column; gap: 7px; }
+.run-step {
+  display: flex; gap: 9px; align-items: flex-start;
+  font-size: 0.8rem; line-height: 1.45; color: var(--text-2);
+  animation: step-in 0.22s ease-out;
+}
+@keyframes step-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.run-step .rs-ic { color: var(--text-3); flex-shrink: 0; margin-top: 1px; }
+.run-step .rs-ic .ic { width: 14px; height: 14px; }
+.run-step.running .rs-ic { color: var(--accent); }
+.run-step.done .rs-ic { color: var(--ok, #22c55e); }
+.run-step.failed .rs-ic { color: var(--danger, #ef4444); }
+.run-step .rs-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.run-step .rs-title { color: var(--text); font-weight: 550; }
+.run-step .rs-detail {
+  color: var(--text-3); font-size: 0.74rem;
+  font-family: var(--mono); word-break: break-word;
+}
+@media (max-width: 640px) {
+  .run-step .rs-detail { display: none; }
+  .run-card { padding: 10px 11px; }
+}
 
 /* ============================================================================
    8. Pills, badges
