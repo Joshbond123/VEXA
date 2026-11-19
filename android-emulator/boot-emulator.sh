@@ -78,10 +78,10 @@ boot_avd() {
 
 try_boot() {
   local api="$1" tag="$2" label="$3" timeout_s="${4:-600}"
-  log "--- attempting $label (API $api, $tag) ---"
+  log "--- attempting $label (API $api, $tag, ${timeout_s}s budget) ---"
   install_image "$api" "$tag" || { log "image install failed"; return 1; }
   create_avd "$api" "$tag" "$AVD_NAME" || { log "AVD creation failed"; return 1; }
-  boot_avd "$AVD_NAME" "${3:-600}" || return 1
+  boot_avd "$AVD_NAME" "$timeout_s" || return 1
 
   # Record which image actually booted so later steps can adapt.
   {

@@ -86,6 +86,21 @@ await test('the emulator boots a Play-capable image first, with a fallback', asy
   );
 });
 
+await test('boot timeouts are numeric, not the label string', async () => {
+  // Run 46 died with `line 59: Play: unbound variable` because try_boot passed
+  // its label ($3) where boot_avd expected the timeout. Cheap to get wrong,
+  // expensive to discover 5 minutes into a CI boot, so pin the call shape.
+  const s = readFileSync(join(ROOT, 'android-emulator/boot-emulator.sh'), 'utf8');
+  assert.ok(
+    s.includes('boot_avd "$AVD_NAME" "$timeout_s"'),
+    'boot_avd must receive the resolved timeout, not another positional arg',
+  );
+  assert.ok(!/boot_avd "\$AVD_NAME" "\$\{?[34]/.test(s), 'boot_avd must not take a raw positional for the timeout');
+  for (const m of s.matchAll(/try_boot "\$[A-Z_]+" "\w+" "([^"]+)" (\d+)/g)) {
+    assert.match(m[2], /^\d+$/, `timeout for "${m[1]}" must be numeric`);
+  }
+});
+
 await test('realism script does not claim to defeat Play Integrity', async () => {
   const s = readFileSync(join(ROOT, 'android-emulator/real-device-profile.sh'), 'utf8');
   // Honesty guard: the script may tune settings, but it must not pretend to
