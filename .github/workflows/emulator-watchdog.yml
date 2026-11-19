@@ -1,0 +1,78 @@
+name: VEXA Emulator Watchdog
+
+# The 4-hour rotation is the only thing that keeps the emulator online, so any
+# single failure in it takes the whole site down until the next cron tick.
+# Run 45 proved the cost: one transient apt error left the site reporting
+# "Offline" for over 10 hours. This watchdog closes that hole — if the gateway
+# says the device is offline and no rotation run is already queued or running,
+# it dispatches a fresh rotation.
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: vexa-emulator-watchdog
+  cancel-in-progress: false
+
+jobs:
+  ensure-online:
+    name: Restore the emulator if it is offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check device and re-dispatch if needed
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          WORKER_URL: https://vexa-ai-agent.replyraven001.workers.dev
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          STATUS=$(curl -s -m 25 "${WORKER_URL}/api/frontend/emulator-status" || echo '{}')
+          echo "status: $STATUS"
+
+          ONLINE=$(echo "$STATUS" | python3 -c "import json,sys;print(str(json.load(sys.stdin).get('online',False)).lower())" 2>/dev/null || echo "false")
+          if [ "$ONLINE" = "true" ]; then
+            echo "Device is online; nothing to do."
+            exit 0
+          fi
+
+          if [ -z "${GH_PAT:-}" ]; then
+            echo "::warning::GH_PAT is not configured, so the watchdog cannot re-dispatch"
+            exit 0
+          fi
+
+          # A run that is queued or in progress will bring the device up on its
+          # own. Dispatching on top of it would only queue behind the existing
+          # concurrency group, so treat "not completed" as good enough.
+          ACTIVE=$(curl -s -m 25 -H "Authorization: Bearer ${GH_PAT}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/android-emulator.yml/runs?per_page=5" \
+            | grep -oE '"status": *"[a-z_]+"' \
+            | grep -E 'queued|in_progress|waiting|pending' \
+            | wc -l | tr -d ' ')
+          ACTIVE=${ACTIVE:-0}
+          echo "active rotation runs: $ACTIVE"
+
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "A rotation is already queued or running; waiting for it."
+            exit 0
+          fi
+
+          echo "Device is offline and no rotation is active — dispatching one."
+          CODE=$(curl -s -m 25 -o /tmp/dispatch.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${GH_PAT}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/workflows/android-emulator.yml/dispatches" \
+            -d '{"ref":"vexa","inputs":{"rotation_minutes":"240","restore_state":"false"}}')
+          echo "dispatch HTTP ${CODE}"
+          if [ "$CODE" != "204" ]; then
+            echo "::error::dispatch failed"
+            cat /tmp/dispatch.json || true
+            exit 1
+          fi

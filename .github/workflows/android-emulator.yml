@@ -38,7 +38,7 @@ jobs:
       GH_PAT: ${{ secrets.GH_PAT }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       ANDROID_STATE_BRANCH: android-state-v1
-      AVD_NAME: vexa_android_28
+      AVD_NAME: vexa_android
       CLOUDFLARE_WORKER_URL: https://vexa-ai-agent.replyraven001.workers.dev
       ANDROID_HOME: /usr/local/lib/android/sdk
       MOBILERUN_PORT: '8765'
@@ -70,9 +70,38 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg openjdk-17-jdk wget unzip curl
-          echo "Dependencies installed"
+          # apt on this runner intermittently fails with
+          # "Could not wait for server fd - select (11: Resource temporarily
+          # unavailable)" against security.ubuntu.com. That single transient
+          # error killed run 45 and with it the whole 4-hour rotation, leaving
+          # the site reporting the emulator offline for 10+ hours.
+          #
+          # Nothing here is strictly required for the boot: the runner image
+          # already ships curl/wget/unzip and the JDK, and ffmpeg is only used
+          # for the optional downscaled preview. So: retry with backoff, then
+          # continue without the optional packages rather than failing the job.
+          set -uo pipefail
+          ok=false
+          for attempt in 1 2 3; do
+            if sudo apt-get update -qq -o Acquire::Retries=3 \
+               && sudo apt-get install -y -qq -o Acquire::Retries=3 \
+                    ffmpeg openjdk-17-jdk wget unzip curl; then
+              ok=true
+              break
+            fi
+            echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 15))s"
+            sudo rm -rf /var/lib/apt/lists/partial || true
+            sleep $((attempt * 15))
+          done
+          if [ "$ok" != "true" ]; then
+            echo "::warning::apt install failed after 3 attempts; continuing with the preinstalled toolchain"
+          fi
+          # Hard requirements only.
+          for bin in curl wget unzip java; do
+            command -v "$bin" >/dev/null 2>&1 || { echo "::error::$bin is missing and cannot be installed"; exit 1; }
+          done
+          command -v ffmpeg >/dev/null 2>&1 || echo "::warning::ffmpeg unavailable; preview will fall back to the full PNG"
+          echo "Dependencies ready"
 
       - name: Install Android SDK Command-line Tools
         run: |
@@ -86,35 +115,15 @@ jobs:
           rm cmdline-tools.zip
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
 
-      - name: Install Android SDK (API 28 - smaller, faster boot)
+      - name: Install Android SDK packages
         run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platform-tools" "emulator" "platforms;android-28" "system-images;android-28;google_apis;x86_64" "build-tools;28.0.3" 2>&1 | tail -10
+          # platform-tools + emulator are needed by every path; the system image
+          # is chosen in the boot step so a missing Play image can fall back.
+          sdkmanager "platform-tools" "emulator" "build-tools;34.0.0" 2>&1 | tail -5
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
-
-      - name: Create AVD (API 28, google_apis, x86_64)
-        run: |
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
-          # avdmanager and the emulator must agree on where AVDs live. Without
-          # this, avdmanager wrote the AVD to its own default location while the
-          # boot step looked in ANDROID_AVD_HOME and failed with
-          # "Unknown AVD name [vexa_android_28]".
-          export ANDROID_AVD_HOME="$HOME/.android/avd"
-          mkdir -p "$ANDROID_AVD_HOME"
-          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
-          echo "no" | avdmanager create avd -n "$AVD_NAME" \
-            -k "system-images;android-28;google_apis;x86_64" \
-            -d "pixel_2" \
-            --force
-          test -f "$ANDROID_AVD_HOME/$AVD_NAME.ini" || {
-            echo "::error::AVD $AVD_NAME.ini missing from $ANDROID_AVD_HOME"
-            ls -la "$ANDROID_AVD_HOME" || true
-            exit 1
-          }
-          echo "AVD created: $AVD_NAME"
-          emulator -list-avds
 
       - name: Install gateway + mobilerun dependencies
         run: |
@@ -133,59 +142,48 @@ jobs:
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           bash "$PWD/android-emulator/restore-whole-avd.sh" || echo "checkpoint restore skipped (non-fatal)"
         env:
-          AVD_NAME: vexa_android_28
-          ANDROID_STATE_BRANCH: android-state-v1
+          AVD_NAME: vexa_android
 
-      - name: Start Android Emulator (headless, software GPU)
+      - name: Boot emulator (Play Store image preferred)
         run: |
-          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
           export ANDROID_AVD_HOME="$HOME/.android/avd"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          bash android-emulator/boot-emulator.sh
+          # Surface what actually booted to later steps.
+          cat /tmp/vexa-boot.env >> "$GITHUB_ENV"
 
-          echo "Starting emulator (API 28, google_apis, x86_64, headless)..."
-          nohup emulator -avd "$AVD_NAME" \
-            -no-window -gpu swiftshader_indirect \
-            -noaudio -no-boot-anim -no-snapshot \
-            -no-snapshot-save -no-snapshot-load \
-            -memory 2048 -cores 2 \
-            > /tmp/emulator.log 2>&1 &
-          echo "Emulator PID: $!"
+      - name: Make the device look and behave like a real phone
+        run: |
+          bash android-emulator/real-device-profile.sh
 
-          adb start-server
-          echo "Waiting for adb device..."
-          DEVICE_SEEN=false
-          for i in $(seq 1 120); do
-            if adb devices 2>/dev/null | grep -q "emulator-5554.*device"; then
-              echo "adb device found: emulator-5554"; DEVICE_SEEN=true; break
+      - name: Verify Google Play Store
+        run: |
+          # The Play Store ships inside the google_apis_playstore system image, so
+          # "installing" it means booting that image — there is nothing to
+          # side-load. This step proves what is actually on the device instead of
+          # assuming the image choice worked.
+          set -uo pipefail
+          echo "--- packages ---"
+          adb shell pm list packages 2>/dev/null | grep -E "com\.android\.vending|com\.google\.android\.gms|com\.google\.android\.gsf" || echo "(none found)"
+
+          if adb shell pm list packages 2>/dev/null | grep -q "com.android.vending"; then
+            echo "PLAY_STORE_PRESENT=true" >> "$GITHUB_ENV"
+            VER=$(adb shell dumpsys package com.android.vending 2>/dev/null | grep -m1 versionName | tr -d '\r')
+            echo "Play Store present ($VER)"
+            # Report sign-in state honestly: the store opens and browses without
+            # an account, but downloads require one.
+            if adb shell dumpsys account 2>/dev/null | grep -q "com.google"; then
+              echo "Google account present on device"
+            else
+              echo "::notice::No Google account on the device — the Play Store opens and browses, but app downloads need a signed-in account"
             fi
-            sleep 5
-          done
-          if [ "$DEVICE_SEEN" != "true" ]; then
-            echo "::error::adb never saw emulator-5554"
-            adb devices || true
-            echo "----- /tmp/emulator.log (tail) -----"
-            tail -n 80 /tmp/emulator.log || true
-            exit 1
+            adb shell monkey -p com.android.vending -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || true
+            sleep 4
+            adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E "mResumedActivity|topResumedActivity" | tr -d '\r' || true
+          else
+            echo "PLAY_STORE_PRESENT=false" >> "$GITHUB_ENV"
+            echo "::warning::Play Store not present — booted the fallback image"
           fi
-
-          echo "Waiting for boot completion..."
-          BOOTED=false
-          for i in $(seq 1 120); do
-            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || echo "0")
-            if [ "$BOOT" = "1" ]; then echo "Android boot completed!"; BOOTED=true; break; fi
-            sleep 5
-          done
-          if [ "$BOOTED" != "true" ]; then
-            echo "::error::Android did not finish booting in 10 minutes"
-            echo "----- /tmp/emulator.log (tail) -----"
-            tail -n 80 /tmp/emulator.log || true
-            exit 1
-          fi
-
-          adb shell input keyevent 82 || true
-          adb shell wm dismiss-keyguard || true
-          adb shell getprop ro.product.model || true
-          adb shell getprop ro.build.version.release || true
-          adb shell wm size || true
 
       - name: Run VEXA Emulator Session
         run: |
