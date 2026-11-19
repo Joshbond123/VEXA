@@ -212,9 +212,32 @@ function verifyClaim(uiHierarchy, summary) {
 }
 
 /* ------------------------------------------------------------------ gateway / device */
+
+/* Decide whether an /api/emulator/status payload means a live phone.
+ * Pure so it can be unit-tested without a network. */
+function interpretEmulatorStatus(data) {
+  const session = data?.session || null;
+  if (!data?.ok || !session) return { online: false, reason: 'no Android emulator registered' };
+  if (session.status !== 'online') {
+    return { online: false, reason: `emulator heartbeat is stale (last ${session.lastHeartbeat || 'unknown'})` };
+  }
+  return { online: true, session };
+}
+
+async function getEmulatorLiveness(base) {
+  try {
+    const res = await fetchWithTimeout(`${base}/api/emulator/status`, { timeoutMs: 8000 });
+    if (!res.ok) return { online: false, reason: `emulator status HTTP ${res.status}` };
+    return interpretEmulatorStatus(await res.json().catch(() => ({})));
+  } catch (err) {
+    return { online: false, reason: `emulator status unreachable: ${err.message}` };
+  }
+}
+
 async function getGatewayStatus(gatewayUrl, attempts = 4) {
   if (!gatewayUrl) return { online: false, reason: 'No gatewayUrl configured in data/emulator.json' };
-  const healthUrl = `${gatewayUrl.replace(/\/+$/, '')}/api/public/health`;
+  const base = gatewayUrl.replace(/\/+$/, '');
+  const healthUrl = `${base}/api/public/health`;
   let reason = 'unknown';
   // A single slow or dropped request must not abort a whole run: the emulator
   // was often live while one health fetch timed out and the agent gave up with
@@ -225,7 +248,17 @@ async function getGatewayStatus(gatewayUrl, attempts = 4) {
       if (!res.ok) { reason = `HTTP ${res.status}`; }
       else {
         const data = await res.json().catch(() => ({}));
-        if (data.ok !== false) return { online: true, data };
+        if (data.ok !== false) {
+          // The Worker is always up; the phone is not. /api/public/health only
+          // proves the Worker answered, so a session that died mid-run still
+          // looked healthy and the agent spent 35 minutes driving a stale frame
+          // on a dead emulator. Confirm the emulator itself is heartbeating.
+          const live = await getEmulatorLiveness(base);
+          if (live.online) return { online: true, data, emulator: live.session };
+          // A missing or stale registration is definitive, not a network blip,
+          // so do not spend the retry budget on it.
+          return { online: false, reason: live.reason };
+        }
         reason = 'health reported not ok';
       }
     } catch (err) { reason = err.message; }
@@ -1075,7 +1108,7 @@ async function main() {
 }
 
 // Exported for unit tests; importing this module must not start the agent loop.
-export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseUiXml, parseCompletion };
+export { mapActionToMobilerun, formatUiElements, screensDiffer, screenChecksum, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseUiXml, parseCompletion, interpretEmulatorStatus };
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {

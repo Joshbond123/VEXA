@@ -9,7 +9,7 @@
  * Run: node tests/test_runner_helpers.mjs
  */
 import assert from 'node:assert/strict';
-import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseCompletion } from '../agent/runner.mjs';
+import { formatUiElements, mapActionToMobilerun, verifyClaim, recoveryAppFor, normalizeDecisionAction, uiHierarchyToText, parseCompletion, interpretEmulatorStatus } from '../agent/runner.mjs';
 
 let passed = 0;
 function test(name, fn) {
@@ -104,6 +104,25 @@ test('verifyClaim does not match a number that only appears in coordinates', () 
   const ui = 'package=com.android.settings (1 labeled elements)\n- "Display" tap(540,10541) bounds=[0,0,1080,1080]';
   const r = verifyClaim(ui, 'I set the value to 10541');
   assert.equal(r.verified, false);
+});
+
+test('interpretEmulatorStatus treats a live session as online', () => {
+  const r = interpretEmulatorStatus({ ok: true, session: { status: 'online', lastHeartbeat: '2026-11-18T23:00:00.000Z' } });
+  assert.equal(r.online, true);
+});
+
+test('interpretEmulatorStatus rejects a session the gateway marked stale', () => {
+  // Regression: the emulator workflow ended but /api/public/health still
+  // returned ok, so the agent drove a stale frame on a dead phone for 35 min.
+  const r = interpretEmulatorStatus({ ok: true, session: { status: 'offline', lastHeartbeat: '2026-11-18T15:16:35.960Z' } });
+  assert.equal(r.online, false);
+  assert.match(r.reason, /stale/);
+});
+
+test('interpretEmulatorStatus rejects a missing registration', () => {
+  const r = interpretEmulatorStatus({ ok: false, status: 'offline', message: 'No emulator registered' });
+  assert.equal(r.online, false);
+  assert.match(r.reason, /no Android emulator/);
 });
 
 test('verifyClaim does not block a non-numeric completion', () => {
