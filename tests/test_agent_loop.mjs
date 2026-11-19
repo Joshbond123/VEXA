@@ -11,7 +11,8 @@
  * Run: node tests/test_agent_loop.mjs
  */
 import assert from 'node:assert/strict';
-import { runAgentTask, parseStep, uiLabels, buildObservation, isSessionOnline, MAX_STEPS } from '../cloudflare-backend/src/agent-loop.js';
+import fs from 'node:fs';
+import { runAgentTask, parseStep, uiLabels, uiElements, buildObservation, isSessionOnline, MAX_STEPS } from '../cloudflare-backend/src/agent-loop.js';
 
 /* ------------------------------------------------------------ fake device */
 
@@ -160,6 +161,14 @@ await test('parseStep treats a plain reply as the answer instead of dropping it'
   assert.match(s.answer, /home launcher/);
 });
 
+await test('parseStep treats ACTION done as completion, not a device command', () => {
+  // Observed live: the model finished with {"action":"done","text":"..."} and
+  // the run kept looping on "Unknown action: done" until the step cap.
+  const s = parseStep('THOUGHT: I found it\nACTION: {"action":"done","text":"The Android version is 9."}');
+  assert.equal(s.done, true);
+  assert.equal(s.answer, 'The Android version is 9.');
+});
+
 await test('parseStep flags malformed ACTION JSON', () => {
   const s = parseStep('THOUGHT: try\nACTION: {action: tap, x: 5}');
   assert.equal(s.done, false);
@@ -168,15 +177,42 @@ await test('parseStep flags malformed ACTION JSON', () => {
 });
 
 await test('uiLabels extracts text and content-desc from the UI tree', () => {
-  const xml = '<node text="Display" content-desc="" /><node text="" content-desc="Brightness" />';
+  const xml = '<node text="Display" content-desc="" bounds="[0,0][200,80]" />'
+    + '<node text="" content-desc="Brightness" bounds="[0,100][200,180]" />';
   const b64 = Buffer.from(xml).toString('base64');
   const labels = uiLabels(b64);
   assert.deepEqual(labels.sort(), ['Brightness', 'Display']);
 });
 
+await test('uiElements gives each element the centre of its real bounds', () => {
+  // Captured from the live emulator: "GOT IT" spans the full width at the
+  // bottom. The agent used to be told only the label, guessed y=900, and tapped
+  // the middle of the page forever.
+  const xml = fs.readFileSync(new URL('./fixtures/gmail-welcome.xml', import.meta.url), 'utf8');
+  const els = uiElements(Buffer.from(xml).toString('base64'));
+  const got = els.find((e) => e.label === 'GOT IT');
+  assert.ok(got, 'the GOT IT button must be listed');
+  assert.equal(got.clickable, true, 'a clickable button must be marked clickable');
+  assert.equal(got.x, 540, 'centre of [0,1647][1080,1794] is x=540');
+  assert.equal(got.y, 1721, 'centre of [0,1647][1080,1794] rounds to y=1721');
+});
+
+await test('the observation lists coordinates the model can copy', () => {
+  const xml = fs.readFileSync(new URL('./fixtures/gmail-welcome.xml', import.meta.url), 'utf8');
+  const obs = buildObservation({ uiHierarchy: Buffer.from(xml).toString('base64') });
+  assert.match(obs.text, /"GOT IT" tap\(540,1721\)/, 'the tap target must be spelled out');
+  assert.match(obs.text, /\[clickable\]/, 'clickable elements are flagged');
+});
+
+await test('clickable elements are listed before plain text', () => {
+  const xml = fs.readFileSync(new URL('./fixtures/gmail-welcome.xml', import.meta.url), 'utf8');
+  const els = uiElements(Buffer.from(xml).toString('base64'));
+  assert.equal(els[0].label, 'GOT IT', `expected the button first, got ${els[0].label}`);
+});
+
 await test('buildObservation attaches a data-URL frame for the vision model', () => {
   const obs = buildObservation(
-    { lastScreenshotUrl: PNG_1PX, uiHierarchy: Buffer.from('<node text="OK"/>').toString('base64') },
+    { lastScreenshotUrl: PNG_1PX, uiHierarchy: Buffer.from('<node text="OK" bounds="[0,0][100,60]"/>').toString('base64') },
     { resolution: { width: 1080, height: 2400 } },
   );
   assert.ok(obs.frame && obs.frame.startsWith('data:image/png;base64,'), 'frame must be attachable');

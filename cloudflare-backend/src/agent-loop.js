@@ -26,10 +26,14 @@ import {
 } from './database.js';
 import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
 
-export const MAX_STEPS = 12;
-export const DEADLINE_MS = 110_000;
-const ACTION_TIMEOUT_MS = 20_000;
-const ACTION_POLL_MS = 500;
+export const MAX_STEPS = 20;
+// Each step costs one model round-trip plus one device round-trip. At ~15s per
+// model call a 110s budget only bought five steps, so ordinary tasks (open an
+// app, read a value) ran out of time mid-way. The run is streamed, and CPU time
+// stays near zero because every step is waiting on I/O.
+export const DEADLINE_MS = 240_000;
+const ACTION_TIMEOUT_MS = 12_000;
+const ACTION_POLL_MS = 300;
 
 const SYSTEM_PROMPT = `You are VEXA, an autonomous agent operating a real Android phone.
 
@@ -56,9 +60,12 @@ Action schema:
 - {"action":"wait","ms":2000}                    — let the screen settle
 
 Rules:
+- Each element in the observation is listed as: - "<label>" tap(x,y) [clickable].
+  That tap(x,y) is the centre of the element's real bounds — use it verbatim.
+  Never estimate a coordinate for an element that is listed.
 - Coordinates are integer PIXELS in the device's own resolution, origin top-left.
 - Take ONE action per reply. You will see the resulting screen before deciding the next one.
-- Ground every tap in what you can actually see. Never guess coordinates for an element you cannot locate.
+- Only when an element is absent from the list should you estimate from the screenshot.
 - If a dialog, permission prompt, or notification blocks the way, dismiss it first.
 - Do not repeat an action that just failed to change the screen; try a different approach.
 - When you have the answer the user asked for, reply with DONE and state what you observed on screen.`;
@@ -88,39 +95,88 @@ async function emit(db, ctx, event) {
   }
 }
 
-/** Extract readable labels from the uiautomator XML tree (base64 or raw). */
-export function uiLabels(uiHierarchy, limit = 70) {
+/**
+ * Parse the uiautomator XML tree into tappable elements.
+ *
+ * The bounds matter as much as the label: a model told only "GOT IT" guesses a
+ * tap position and misses the button, then retries the same wrong coordinate.
+ * Each element therefore carries the centre of its own bounds.
+ */
+export function uiElements(uiHierarchy, limit = 60) {
   if (!uiHierarchy) return [];
   let raw = uiHierarchy;
   try {
-    if (!raw.startsWith('DUMPSYS_WINDOWS:')) {
-      // Stored base64-encoded by the emulator.
-      raw = typeof atob === 'function' ? atob(uiHierarchy) : Buffer.from(uiHierarchy, 'base64').toString('utf8');
-    } else {
-      return [];
-    }
+    if (typeof raw === 'string' && raw.startsWith('DUMPSYS_WINDOWS:')) return [];
+    raw = typeof atob === 'function'
+      ? atob(uiHierarchy)
+      : Buffer.from(uiHierarchy, 'base64').toString('utf8');
   } catch {
     return [];
   }
-  const labels = [...raw.matchAll(/(?:text|content-desc)="([^"]+)"/g)]
-    .map((m) => m[1].trim())
-    .filter((s) => s && s.length < 120);
-  return [...new Set(labels)].slice(0, limit);
+
+  const out = [];
+  const seen = new Set();
+  for (const m of String(raw).matchAll(/<node\b[^>]*>/g)) {
+    const tag = m[0];
+    const attr = (name) => {
+      const found = tag.match(new RegExp(`${name}="([^"]*)"`));
+      return found ? found[1] : '';
+    };
+    const label = (attr('text') || attr('content-desc') || '').trim();
+    if (!label || label.length > 120) continue;
+    const bounds = attr('bounds').match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+    if (!bounds) continue;
+    const [, x1, y1, x2, y2] = bounds.map(Number);
+    const w = x2 - x1;
+    const h = y2 - y1;
+    if (w <= 0 || h <= 0) continue;
+    // Several nodes share a label (a container and its text). Keep the innermost
+    // one — the smallest box is the element a finger would actually hit.
+    const key = label.toLowerCase();
+    const el = {
+      label,
+      x: Math.round(x1 + w / 2),
+      y: Math.round(y1 + h / 2),
+      clickable: attr('clickable') === 'true',
+      area: w * h,
+    };
+    const prev = seen.has(key) ? out.findIndex((e) => e.label.toLowerCase() === key) : -1;
+    if (prev >= 0) {
+      if (el.area < out[prev].area) out[prev] = el;
+    } else {
+      seen.add(key);
+      out.push(el);
+    }
+  }
+  // Clickable elements first: they are what the task is usually about.
+  out.sort((a, b) => Number(b.clickable) - Number(a.clickable) || a.area - b.area);
+  return out.slice(0, limit);
+}
+
+/** Extract readable labels from the uiautomator XML tree (base64 or raw). */
+export function uiLabels(uiHierarchy, limit = 70) {
+  return uiElements(uiHierarchy, limit).map((e) => e.label);
 }
 
 /**
- * Build the observation block handed to the model: the on-screen text plus the
- * live frame when one is attachable.
+ * Build the observation block handed to the model: each on-screen element with
+ * the coordinate to tap, plus the live frame when one is attachable.
  */
 export function buildObservation(state, { resolution } = {}) {
-  const labels = uiLabels(state?.uiHierarchy);
+  const elements = uiElements(state?.uiHierarchy);
   const frame = state?.lastScreenshotUrl || '';
   const attachable = /^data:image\/(png|jpe?g|webp);base64,/.test(frame) && frame.length < 6_000_000;
   const lines = [];
-  if (labels.length) lines.push(`On-screen text: ${labels.join(' | ')}`);
-  else lines.push('On-screen text: (no accessibility labels available — rely on the screenshot)');
+  if (elements.length) {
+    lines.push('On-screen elements (label -> tap coordinate):');
+    for (const el of elements) {
+      lines.push(`- "${el.label}" tap(${el.x},${el.y})${el.clickable ? ' [clickable]' : ''}`);
+    }
+  } else {
+    lines.push('On-screen elements: none exposed — rely on the screenshot and estimate coordinates.');
+  }
   if (resolution?.width) lines.push(`Device resolution: ${resolution.width}x${resolution.height} px`);
-  return { text: lines.join('\n'), frame: attachable ? frame : null, labels };
+  return { text: lines.join('\n'), frame: attachable ? frame : null, labels: elements.map((e) => e.label) };
 }
 
 /** Parse a model reply into a thought plus either an action or a final answer. */
@@ -133,11 +189,20 @@ export function parseStep(reply) {
   }
   const actionMatch = text.match(/ACTION:\s*(\{[\s\S]*?\})/);
   if (actionMatch) {
+    let action;
     try {
-      return { thought, done: false, action: JSON.parse(actionMatch[1]) };
+      action = JSON.parse(actionMatch[1]);
     } catch {
       return { thought, done: false, action: null, parseError: 'ACTION was not valid JSON' };
     }
+    // Models routinely express completion as an action ({"action":"done",...})
+    // instead of the DONE: line. Treating that as a device command failed with
+    // "Unknown action: done" and the run looped until the step cap.
+    const name = String(action.action || '').toLowerCase();
+    if (name === 'done' || name === 'finish' || name === 'complete') {
+      return { thought, done: true, answer: String(action.text || action.answer || thought || 'Done.').trim() };
+    }
+    return { thought, done: false, action };
   }
   // A reply with neither marker is treated as a final answer rather than
   // silently discarded — the user asked a question and deserves the response.
@@ -330,6 +395,7 @@ export async function runAgentTask(env, ctx) {
     });
 
     let outcome;
+    const signatureBefore = state?.screenChecksum || null;
     try {
       outcome = await executeAction(env, action, wrappedCtx);
     } catch (err) {
@@ -353,11 +419,15 @@ export async function runAgentTask(env, ctx) {
       continue;
     }
 
+    // Only claim the screen moved when the checksum actually moved. Reporting
+    // "screen updated" for a no-op action hid the fact that taps were missing.
+    const signatureAfter = outcome.state?.screenChecksum || null;
+    const screenMoved = Boolean(signatureBefore && signatureAfter && signatureBefore !== signatureAfter);
     await emit(env.DB, wrappedCtx, {
       kind: 'tool',
       title: `Step ${step}: executed`,
-      detail: `${describeAction(action)} — screen updated`,
-      status: 'done',
+      detail: `${describeAction(action)} — ${screenMoved ? 'screen updated' : 'screen unchanged'}`,
+      status: screenMoved ? 'done' : 'running',
     });
 
     if (repeatCount >= 2) {
