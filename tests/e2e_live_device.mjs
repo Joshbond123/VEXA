@@ -52,6 +52,20 @@ function foregroundPackages(ui) {
 function elementTexts(ui) {
   return [...ui.matchAll(/(?:text|content-desc)="([^"]+)"/g)].map((m) => m[1]).filter(Boolean);
 }
+// The emulator polls for the action, runs it and uploads the new frame, so the
+// frame lands a few seconds after the action is queued. Poll for the change
+// rather than assuming a fixed delay — this is also how the agent confirms an
+// action landed, and it makes the test deterministic instead of timing-flaky.
+async function waitForScreenChange(prev, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = prev;
+  while (Date.now() < deadline) {
+    latest = await screenshot();
+    if (!latest.equals(prev)) return latest;
+    await sleep(2000);
+  }
+  return latest;
+}
 
 /* ------------------------------------------------------------------ tests */
 
@@ -79,13 +93,16 @@ check('launching Calculator brings it to the foreground',
   pkgs.some((p) => /calculator/i.test(p)), `packages=${pkgs.slice(0, 3).join(',')}`);
 
 // 3. Tap a digit on the keypad by reading its real bounds from the UI tree.
-const digitNodes = [...ui.matchAll(/<node[^>]*text="([0-9])"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)];
+// Only clickable digit nodes count — the calculator also renders the current
+// expression as a non-interactive text node, and tapping that does nothing.
+const digitNodes = [...ui.matchAll(/<node[^>]*clickable="true"[^>]*text="([0-9])"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)]
+  .concat([...ui.matchAll(/<node[^>]*text="([0-9])"[^>]*clickable="true"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)]);
 if (digitNodes.length) {
   const [, digit, x1, y1, x2, y2] = digitNodes[0];
   const cx = Math.round((+x1 + +x2) / 2), cy = Math.round((+y1 + +y2) / 2);
   const before = await screenshot();
-  await dispatch({ action: 'tap', x: cx, y: cy }, 'e2e_tap', 7000);
-  const after = await screenshot();
+  await dispatch({ action: 'tap', x: cx, y: cy }, 'e2e_tap', 0);
+  const after = await waitForScreenChange(before);
   check(`tapping keypad "${digit}" at (${cx},${cy}) changes the screen`,
     !before.equals(after), `from UI-tree bounds, not guessed coordinates`);
   const afterUi = uiText(await state());
@@ -99,8 +116,8 @@ if (digitNodes.length) {
 // list — swiping a static calculator screen proves nothing.
 await dispatch({ action: 'launch', app: 'settings' }, 'e2e_settings', 9000);
 const preScroll = await screenshot();
-await dispatch({ action: 'swipe', x: 540, y: 1500, x2: 540, y2: 600, ms: 300 }, 'e2e_swipe', 7000);
-const postScroll = await screenshot();
+await dispatch({ action: 'swipe', x: 540, y: 1500, x2: 540, y2: 600, ms: 300 }, 'e2e_swipe', 0);
+const postScroll = await waitForScreenChange(preScroll);
 check('swipe on a scrollable list is executed and observed', !preScroll.equals(postScroll));
 
 // 5. Type text and confirm it lands on the device.
