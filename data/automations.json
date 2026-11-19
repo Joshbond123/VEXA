@@ -37,14 +37,14 @@
     "instructions": "Open the Calculator app on the Android device, compute 127 multiplied by 83, take a screenshot of the result, and report the exact number shown on screen.",
     "scheduleType": "once",
     "intervalMinutes": 60,
-    "enabled": true,
+    "enabled": false,
     "paused": false,
-    "status": "failed",
+    "status": "completed",
     "nextRunAt": null,
-    "lastRunAt": "2026-11-18T23:57:22.072Z",
-    "runCount": 23,
+    "lastRunAt": "2026-11-19T00:15:34.055Z",
+    "runCount": 24,
     "createdAt": "2026-11-18T00:00:00.000Z",
-    "updatedAt": "2026-11-18T23:57:22.072Z",
-    "lastRunStatus": "failed"
+    "updatedAt": "2026-11-19T00:15:34.055Z",
+    "lastRunStatus": "completed"
   }
 ]
