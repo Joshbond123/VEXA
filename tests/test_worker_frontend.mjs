@@ -173,6 +173,26 @@ await test('emulator status reports frame freshness, not just a heartbeat', asyn
   assert.equal(data.screenshotUrl, 'https://vexa-ai-agent.replyraven001.workers.dev/api/public/screenshot');
 });
 
+await test('emulator status trusts the fresh D1 row over a stale KV cache', async () => {
+  // Heartbeats skip KV to stay inside the free write quota, so the cache can be
+  // an hour old. Reading it first reported a live device as offline and the
+  // sidebar showed "Offline" while the emulator was streaming frames.
+  const now = new Date().toISOString();
+  const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const db = createDb();
+  const kv = createKv({ 'emulator:default': JSON.stringify({ id: 'default', status: 'online', lastHeartbeat: stale }) });
+  await upsertEmulatorSession(db, {
+    id: 'default', status: 'online', gatewayUrl: 'https://gw', deviceModel: 'Pixel 2',
+    androidVersion: '9', resolution: '1080x1920', lastHeartbeat: now,
+  });
+
+  const env = { CONFIG_KV: createKv(), SESSION_KV: kv, DB: db };
+  const res = await handleFrontend(req('/api/frontend/emulator-status', 'GET'), env, {}, null, corsHeaders);
+  const data = await res.json();
+  assert.equal(data.online, true, 'a fresh D1 heartbeat must win over the stale cache');
+  assert.equal(data.heartbeatAgeMs < 60_000, true, 'the reported age comes from D1');
+});
+
 await test('emulator status is offline with no session and never throws', async () => {
   const env = { CONFIG_KV: createKv(), SESSION_KV: createKv(), DB: createDb() };
   const res = await handleFrontend(req('/api/frontend/emulator-status', 'GET'), env, {}, null, corsHeaders);

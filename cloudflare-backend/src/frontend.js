@@ -253,12 +253,17 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
   // GET /api/frontend/emulator-status - get emulator status for frontend
   if (path === '/api/frontend/emulator-status' && method === 'GET') {
     try {
-      let session = null;
-      const cached = await env.SESSION_KV.get('emulator:default');
-      if (cached) {
-        try { session = JSON.parse(cached); } catch { session = null; }
+      // Liveness comes from D1, not the KV cache: heartbeats deliberately skip
+      // KV to stay inside the write quota, so a cached row can be an hour old
+      // and report a perfectly healthy device as offline. KV is only a fallback
+      // for the case where D1 has no row at all.
+      let session = await getEmulatorSession(env.DB);
+      if (!session) {
+        const cached = await env.SESSION_KV.get('emulator:default');
+        if (cached) {
+          try { session = JSON.parse(cached); } catch { session = null; }
+        }
       }
-      if (!session) session = await getEmulatorSession(env.DB);
 
       if (!session) {
         return Response.json({
@@ -534,10 +539,11 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
         }
       }
 
-      // One KV read, not two: the previous form fetched the key, discarded it,
-      // then fetched it again to parse.
-      const session = (await kvGetJson(env.SESSION_KV, 'emulator:default'))
-        || await getEmulatorSession(env.DB);
+      // D1 first for the same reason as the status route: the KV copy is not
+      // refreshed by heartbeats, so trusting it first made a live device look
+      // offline and refused the run.
+      const session = (await getEmulatorSession(env.DB))
+        || (await kvGetJson(env.SESSION_KV, 'emulator:default'));
       const state = await getDeviceState(env.DB);
       const online = !!session && session.status === 'online'
         && (Date.now() - new Date(session.lastHeartbeat || 0).getTime()) < 5 * 60 * 1000;
