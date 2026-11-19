@@ -29,6 +29,8 @@
     screenSignature: null,
     streaming: false,
     chatBusy: false,
+    frameInFlight: false,
+    frameFailures: 0,
   };
 
   /* ------------------------------------------------------------------ dom */
@@ -161,18 +163,28 @@
   async function pullFrame() {
     const canvas = $('phoneCanvas');
     if (!canvas) return;
+    // A frame can take longer than the poll interval to arrive. Without this
+    // guard the ticks stack up, every one holding a full-size PNG in flight, and
+    // the tab locks up on a slow phone connection.
+    if (state.frameInFlight) return;
+    state.frameInFlight = true;
     const ctx = canvas.getContext('2d');
     try {
       const res = await fetch(`${API}/api/public/screenshot?t=${Date.now()}`, { cache: 'no-store' });
-      if (!res.ok) return;
+      if (!res.ok) { state.frameFailures++; return; }
       const blob = await res.blob();
-      if (blob.size < 200) return; // 1x1 blank placeholder
+      if (blob.size < 200) { state.frameFailures++; return; } // 1x1 blank placeholder
       const bmp = await createImageBitmap(blob);
       ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
       bmp.close();
+      state.frameFailures = 0;
       const overlay = $('phoneOfflineOverlay');
       if (overlay) overlay.classList.add('hidden');
-    } catch { /* transient; retry next tick */ }
+    } catch { /* transient; retry next tick */
+      state.frameFailures++;
+    } finally {
+      state.frameInFlight = false;
+    }
   }
 
   /* -------------------------------------------------------------- actions */
