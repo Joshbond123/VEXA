@@ -41,6 +41,7 @@
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-3.8-.9L3 21l2-4.9A8.4 8.4 0 1 1 21 11.5z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></symbol>
   </defs>
 </svg>
 
@@ -172,6 +173,12 @@
               <span id="deviceModelLabel">—</span>
               <span id="deviceResLabel"></span>
               <span id="deviceFrameLabel"></span>
+              <span id="deviceLinkLabel"></span>
+            </div>
+
+            <div class="device-capture-note" id="deviceCaptureNote">
+              <svg class="ic ic-sm"><use href="#i-eye"/></svg>
+              <span id="deviceCaptureText">Checking whether the agent can see the screen…</span>
             </div>
 
             <div class="device-controls">
@@ -246,6 +253,44 @@
           <button class="btn btn-primary" id="createAutoBtn"><svg class="ic"><use href="#i-plus"/></svg>New Automation</button>
         </div>
         <div class="automations-grid" id="automationsList"></div>
+      </section>
+
+      <!-- ============================================ AUTOMATION DETAIL -->
+      <section id="view-automation" class="view">
+        <div class="view-header">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+            <button class="btn btn-icon btn-ghost" id="autoBackBtn" title="Back to automations"><svg class="ic"><use href="#i-back"/></svg></button>
+            <div style="min-width:0;">
+              <h1 id="autoDetailName">Automation</h1>
+              <p class="view-sub" id="autoDetailSub">Loading…</p>
+            </div>
+          </div>
+          <div class="panel-head-actions">
+            <button class="btn btn-primary btn-sm" id="autoDetailRunBtn"><svg class="ic ic-sm"><use href="#i-play"/></svg>Run now</button>
+            <button class="btn btn-ghost btn-sm" id="autoDetailPauseBtn">Pause</button>
+          </div>
+        </div>
+
+        <div class="auto-detail-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Conversation</h2>
+              <span class="pill idle" id="autoDetailStatus"><span class="pill-dot"></span><span>—</span></span>
+            </div>
+            <div class="chat-messages auto-conversation" id="autoDetailMessages"></div>
+          </div>
+
+          <div class="auto-detail-side">
+            <div class="panel">
+              <div class="panel-head"><h2>Live activity</h2></div>
+              <div class="activity-feed" id="autoDetailActivity"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>Executions</h2></div>
+              <div class="exec-history" id="autoDetailExecutions"></div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- ============================================ REPORTS -->

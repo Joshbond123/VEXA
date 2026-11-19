@@ -6,7 +6,7 @@
 import {
   getAutomations, getAutomation, upsertAutomation,
   saveExecution, saveChatMessage, getChats,
-  getSettings, upsertSettings,
+  getSettings, upsertSettings, appendAgentEvent,
 } from './database.js';
 
 export async function handleAgent(request, env, ctx, token, corsHeaders) {
@@ -127,6 +127,24 @@ export async function handleAgent(request, env, ctx, token, corsHeaders) {
     const automationId = path.split('/').pop();
     const chats = await getChats(env.DB, automationId);
     return Response.json({ ok: true, chats }, { headers: corsHeaders() });
+  }
+
+  // POST /api/agent/events - append real agent activity events.
+  // The agent runner calls this as it plans, calls tools, observes results and
+  // verifies. These are the only source of the live activity feed; the frontend
+  // never fabricates an event.
+  if (path === '/api/agent/events' && method === 'POST') {
+    try {
+      const body = await request.json();
+      const events = Array.isArray(body.events) ? body.events : [body];
+      const seqs = [];
+      for (const ev of events) {
+        seqs.push(await appendAgentEvent(env.DB, ev));
+      }
+      return Response.json({ ok: true, appended: seqs.length, seqs }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
   }
 
   // POST /api/agent/execution - save execution report

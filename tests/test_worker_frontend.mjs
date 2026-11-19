@@ -56,6 +56,23 @@ function createDb() {
         },
         async run() {
           const args = this._args;
+          // Conditional UPDATE used by the atomic action claim: report a changed
+          // row only when no action for this client id is still pending.
+          if (/UPDATE device_state/i.test(sql) && /last_action_status != 'pending'/i.test(sql)) {
+            const [actionJson, clientId] = args;
+            const s = tables.device_state || {};
+            if (s.last_action_status === 'pending' && s.last_action_client_id === clientId) {
+              return { success: true, meta: { changes: 0 } };
+            }
+            tables.device_state = {
+              ...s,
+              last_action: actionJson,
+              last_action_result: 'pending',
+              last_action_client_id: clientId,
+              last_action_status: 'pending',
+            };
+            return { success: true, meta: { changes: 1 } };
+          }
           const ins = sql.match(/INSERT INTO (\w+)\s*\(([^)]+)\)/i);
           if (ins) {
             const row = {};

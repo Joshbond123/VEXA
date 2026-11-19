@@ -5,11 +5,12 @@
 
 import {
   getAutomations, getAutomation, upsertAutomation,
-  getChats, saveChatMessage,
+  getChats, saveChatMessage, saveExecution, listExecutions,
   getEmulatorSession, getDeviceState, upsertDeviceState,
   getSettings, upsertSettings,
   listConversations, getConversation, upsertConversation,
   renameConversation, deleteConversation, touchConversation,
+  appendAgentEvent, listAgentEvents,
 } from './database.js';
 import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
 
@@ -142,6 +143,51 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
     }
   }
 
+  // GET /api/frontend/automations/:id - full automation detail.
+  // Returns the automation, its own conversation (messages), its execution
+  // history, its activity events, and the computed next run. The old UI showed a
+  // hardcoded "linked task" name instead of this, which is the bug being fixed.
+  if (path.match(/^\/api\/frontend\/automations\/[^/]+$/) && method === 'GET') {
+    try {
+      const id = path.split('/').pop();
+      const automation = await getAutomation(env.DB, id);
+      if (!automation) {
+        return Response.json({ error: 'Automation not found' }, { status: 404, headers: corsHeaders() });
+      }
+      // The automation's conversation is keyed by the automation id, so its
+      // messages are the real prompt + real agent responses for this task.
+      const [messages, executions, events] = await Promise.all([
+        getChats(env.DB, id, 500).catch(() => []),
+        listExecutions(env.DB, id),
+        listAgentEvents(env.DB, { automationId: id, limit: 300 }).catch(() => []),
+      ]);
+      const conversation = await getConversation(env.DB, id).catch(() => null);
+      return Response.json({
+        ok: true,
+        automation,
+        conversation: conversation || { id, title: automation.name, automationId: id },
+        messages,
+        executions,
+        events,
+        nextRunAt: automation.nextRunAt || null,
+      }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  // GET /api/frontend/automations/:id/events - activity events for an automation
+  if (path.match(/^\/api\/frontend\/automations\/[^/]+\/events$/) && method === 'GET') {
+    try {
+      const id = path.split('/')[4];
+      const afterSeq = Number(url.searchParams.get('after') || 0);
+      const events = await listAgentEvents(env.DB, { automationId: id, afterSeq, limit: 300 });
+      return Response.json({ ok: true, events }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
   // POST /api/frontend/automations - create automation
   if (path === '/api/frontend/automations' && method === 'POST') {
     try {
@@ -224,6 +270,10 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
       const frameAgeMs = frameAt ? now - frameAt : null;
       const hasFrame = !!state?.lastScreenshotUrl;
       const frameFresh = hasFrame && frameAgeMs !== null && frameAgeMs < 60 * 1000;
+      // A decoded UI tree is what lets the agent identify tappable elements by
+      // name/bounds rather than guessing coordinates. Report it so the UI can
+      // say truthfully whether the agent has visual access.
+      const hasUiTree = !!state?.uiHierarchy;
 
       return Response.json({
         ok: true,
@@ -231,6 +281,7 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
         registered: true,
         hasFrame,
         frameFresh,
+        hasUiTree,
         frameAgeMs,
         heartbeatAgeMs,
         gatewayUrl: session.gatewayUrl,
@@ -336,6 +387,27 @@ export async function handleFrontend(request, env, ctx, token, corsHeaders) {
       }
       const automationId = conversation.automationId || body.automationId || null;
 
+      // The agent can create automations from natural language. Detect that
+      // intent first so "create an automation that…" is a real create action
+      // rather than a chat reply that merely claims one was made.
+      if (looksLikeAutomationRequest(message)) {
+        const parsed = await parseAutomationRequest(env, message);
+        if (parsed.ok) {
+          const created = await createAutomation(env, parsed.config, { conversationId, source: 'agent' });
+          const now = Date.now();
+          await saveChatMessage(env.DB, { id: `msg_${now}_u`, automationId: conversationId, role: 'user', content: message, timestamp: new Date(now).toISOString() });
+          await saveChatMessage(env.DB, { id: `msg_${now}_a`, automationId: conversationId, role: 'agent', content: parsed.reply, timestamp: new Date(now + 1).toISOString() });
+          await touchConversation(env.DB, conversationId);
+          return Response.json({
+            ok: true,
+            reply: parsed.reply,
+            provider: 'agent',
+            createdAutomation: created,
+            conversationId,
+          }, { headers: corsHeaders() });
+        }
+      }
+
       const session = (await env.SESSION_KV.get('emulator:default'))
         ? JSON.parse(await env.SESSION_KV.get('emulator:default'))
         : await getEmulatorSession(env.DB);
@@ -434,6 +506,65 @@ Coordinates MUST be integer PIXELS in the device's own resolution (top-left is 0
       return Response.json({
         ok: true, reply, provider: ai.provider, deviceOnline: online, queuedAction,
         conversationId, title: conversation.title,
+      }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  // GET /api/frontend/conversations/:id/events - activity events for a conversation
+  if (path.match(/^\/api\/frontend\/conversations\/[^/]+\/events$/) && method === 'GET') {
+    try {
+      const id = path.split('/')[4];
+      const afterSeq = Number(url.searchParams.get('after') || 0);
+      const events = await listAgentEvents(env.DB, { conversationId: id, afterSeq, limit: 300 });
+      return Response.json({ ok: true, events }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  // POST /api/frontend/agent/automation - natural-language automation creation.
+  // The agent parses a free-form instruction into a validated automation config,
+  // persists it, and registers its schedule. The scheduling itself is owned by
+  // the GitHub Actions cron (agent-runner.yml), which is independent of any
+  // browser session; this endpoint only creates the durable record.
+  if (path === '/api/frontend/agent/automation' && method === 'POST') {
+    try {
+      const body = await request.json().catch(() => ({}));
+      const instruction = String(body.instruction || '').trim();
+      if (!instruction) {
+        return Response.json({ ok: false, error: 'instruction required' }, { status: 400, headers: corsHeaders() });
+      }
+      const conversationId = body.conversationId || null;
+
+      const draft = await parseAutomationRequest(env, instruction);
+      if (!draft.ok) {
+        return Response.json({ ok: false, error: draft.error, reply: draft.reply }, { status: 422, headers: corsHeaders() });
+      }
+      const created = await createAutomation(env, draft.config, { conversationId, source: 'agent' });
+
+      return Response.json({
+        ok: true,
+        automation: created,
+        reply: draft.reply,
+        conversationId,
+      }, { headers: corsHeaders() });
+    } catch (err) {
+      return Response.json({ ok: false, error: err.message }, { status: 500, headers: corsHeaders() });
+    }
+  }
+
+  // GET /api/frontend/emulator/action-status - result of the most recent action.
+  // Lets the UI refresh the frame the moment the device executed the command.
+  if (path === '/api/frontend/emulator/action-status' && method === 'GET') {
+    try {
+      const state = await getDeviceState(env.DB);
+      return Response.json({
+        ok: true,
+        clientId: state?.lastActionClientId || null,
+        state: state?.lastActionStatus || 'idle',
+        result: state?.lastActionResult || null,
       }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
@@ -595,4 +726,167 @@ function deriveTitle(message) {
   let title = words.slice(0, 8).join(' ');
   if (words.length > 8) title += '\u2026';
   return title.slice(0, 60) || 'New chat';
+}
+
+/* --------------------------------------------------- automation scheduling */
+
+/** True when a chat message is asking the agent to create a scheduled task. */
+export function looksLikeAutomationRequest(message) {
+  const t = String(message || '').toLowerCase();
+  if (/\b(automation|automate|schedul(e|ed|ing|es)?|recurring|every \d+ (minutes?|hours?|days?))\b/.test(t)) return true;
+  // "create a task that runs every…" style phrasing.
+  return /\b(create|make|set up|add)\b.*\b(task|job)\b/.test(t) && /\bevery\b/.test(t);
+}
+
+/**
+ * Turn a free-form instruction into a validated automation config. The AI is
+ * asked for strict JSON; if it fails or returns junk we fall back to a
+ * deterministic parse so creation never silently produces a broken schedule.
+ */
+export async function parseAutomationRequest(env, instruction) {
+  const sys = `You convert a user's request into a scheduled automation for an AI agent that operates a real Android phone.
+Reply with ONLY a JSON object, no prose, of the shape:
+{"name":"short title","instructions":"the concrete task for the agent","scheduleType":"interval|once|daily","intervalMinutes":60}
+Rules:
+- intervalMinutes must be one of 30, 60, 120, 180, 360, 720, 1440.
+- Use scheduleType "daily" with intervalMinutes 1440 for "every day"/"daily".
+- Use "once" only when the user asks for a single run.
+- instructions must be a self-contained task statement (the agent sees only this).
+- name must be under 60 characters.`;
+  let config = null;
+  try {
+    const ai = await askAi(env, { messages: [
+      { role: 'system', content: sys },
+      { role: 'user', content: instruction },
+    ], maxTokens: 400 });
+    if (ai.ok) {
+      const json = extractFirstJson(ai.content);
+      if (json) config = json;
+    }
+  } catch { /* fall through to deterministic parse */ }
+
+  const fallback = deterministicSchedule(instruction);
+  if (!config || typeof config !== 'object') config = fallback;
+
+  const interval = Number(config.intervalMinutes);
+  const allowed = [30, 60, 120, 180, 360, 720, 1440];
+  const intervalMinutes = allowed.includes(interval) ? interval : fallback.intervalMinutes;
+  const scheduleType = ['interval', 'once', 'daily'].includes(config.scheduleType)
+    ? config.scheduleType
+    : fallback.scheduleType;
+
+  const name = String(config.name || '').trim().slice(0, 60) || deriveTitle(instruction);
+  // An instruction that is only whitespace cannot describe a task; reject it
+  // rather than creating an automation that runs against nothing.
+  const instructions = String(config.instructions || '').trim();
+  if (!instructions) {
+    return { ok: false, error: 'Could not determine a task from the request.', reply: 'I could not work out what the automation should do. Please describe the task more concretely.' };
+  }
+  const schedule = scheduleType === 'once'
+    ? 'a single run'
+    : `every ${intervalMinutes >= 1440 ? 'day' : intervalMinutes >= 60 ? `${intervalMinutes / 60} hour(s)` : `${intervalMinutes} minutes`}`;
+  return {
+    ok: true,
+    config: { name, instructions, scheduleType, intervalMinutes },
+    reply: `Created the automation "${name}". It will run ${schedule}, executing: ${instructions}`,
+  };
+}
+
+/** Deterministic schedule parse used when the model is unavailable. */
+function deterministicSchedule(instruction) {
+  const text = String(instruction || '').toLowerCase();
+  let intervalMinutes = 60;
+  const everyN = text.match(/every\s+(\d+)\s*(minute|min|hour|hr|day)/);
+  if (everyN) {
+    const n = Number(everyN[1]);
+    if (everyN[2].startsWith('min')) intervalMinutes = n;
+    else if (everyN[2].startsWith('hour') || everyN[2] === 'hr') intervalMinutes = n * 60;
+    else intervalMinutes = n * 1440;
+  } else if (/\bdaily\b|\bevery day\b/.test(text)) {
+    intervalMinutes = 1440;
+  }
+  const allowed = [30, 60, 120, 180, 360, 720, 1440];
+  // Snap to the nearest supported interval so the scheduler always has a valid
+  // cadence; the cron runs every 15 minutes, so 30 is the practical floor.
+  intervalMinutes = allowed.reduce((best, a) => (Math.abs(a - intervalMinutes) < Math.abs(best - intervalMinutes) ? a : best), 60);
+  return {
+    name: deriveTitle(instruction),
+    instructions: String(instruction || '').trim(),
+    scheduleType: intervalMinutes >= 1440 ? 'daily' : 'interval',
+    intervalMinutes,
+  };
+}
+
+/** Extract the first balanced JSON object from a model reply. */
+function extractFirstJson(text) {
+  const s = String(text || '');
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    if (s[i] === '{') depth++;
+    else if (s[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(s.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Persist an automation and register its schedule. The next run is scheduled
+ * from now, so the durable record itself drives execution: the GitHub Actions
+ * cron reads next_run_at and runs anything due. No browser timer is involved.
+ */
+export async function createAutomation(env, config, { conversationId = null, source = 'user' } = {}) {
+  const now = new Date().toISOString();
+  const id = `auto_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const intervalMinutes = Number(config.intervalMinutes) || 60;
+  const nextRunAt = config.scheduleType === 'once'
+    ? now
+    : new Date(Date.now() + intervalMinutes * 60000).toISOString();
+  const automation = {
+    id,
+    name: config.name || 'New Automation',
+    instructions: config.instructions || '',
+    scheduleType: config.scheduleType || 'interval',
+    intervalMinutes,
+    enabled: true,
+    paused: false,
+    status: config.scheduleType === 'once' ? 'queued' : 'waiting',
+    nextRunAt,
+    lastRunAt: '',
+    lastRunStatus: '',
+    runCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await upsertAutomation(env.DB, automation);
+
+  // Give the automation its own conversation so its prompt and the agent's real
+  // responses live together and survive refreshes.
+  await upsertConversation(env.DB, {
+    id,
+    title: automation.name,
+    automationId: id,
+    status: 'active',
+  }).catch(() => null);
+  if (conversationId && conversationId !== id) {
+    // Link the creating conversation to this automation for traceability.
+    await env.DB.prepare('UPDATE conversations SET automation_id = ? WHERE id = ?')
+      .bind(id, conversationId).run().catch(() => null);
+  }
+
+  await appendAgentEvent(env.DB, {
+    conversationId: conversationId || id,
+    automationId: id,
+    kind: 'automation',
+    title: `Automation created: ${automation.name}`,
+    detail: `${automation.instructions}\nSchedule: ${config.scheduleType} every ${intervalMinutes}m · next run ${nextRunAt}`,
+    status: 'done',
+  }).catch(() => null);
+
+  return automation;
 }

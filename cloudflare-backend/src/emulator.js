@@ -10,7 +10,7 @@
  *   - Agent runner reads screenshots → from D1 device_state
  */
 
-import { upsertEmulatorSession, getEmulatorSession, upsertDeviceState, getDeviceState } from './database.js';
+import { upsertEmulatorSession, getEmulatorSession, upsertDeviceState, getDeviceState, claimDeviceAction } from './database.js';
 import { normalizeDeviceAction, resolutionFromSession, DEFAULT_RESOLUTION } from './device-actions.js';
 
 export async function handleEmulator(request, env, ctx, token, corsHeaders) {
@@ -140,21 +140,23 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
       const action = normalizeDeviceAction(body, await resolveDeviceResolution(env));
 
       // Validate action
-      const validActions = ['tap', 'swipe', 'scroll', 'type', 'key', 'back', 'home', 'launch', 'wait', 'screenshot'];
+      const validActions = ['tap', 'swipe', 'scroll', 'type', 'key', 'back', 'home', 'recents', 'launch', 'wait', 'screenshot', 'shell'];
       if (!validActions.includes(action.action)) {
         return Response.json({ error: `Invalid action: ${action.action}` }, { status: 400, headers: corsHeaders() });
       }
 
-      // Store the action in device state for the emulator to pick up. Only the
-      // action fields are written: upsertDeviceState merges, so the current
-      // screenshot and UI tree survive and the live preview keeps updating while
-      // an action is in flight.
-      await upsertDeviceState(env.DB, {
-        lastAction: JSON.stringify(action),
-        lastActionResult: 'pending',
-      });
+      // Duplicate suppression: a second request carrying the same client id as
+      // an action that is still pending must not queue a device command twice.
+      // The claim is a conditional UPDATE so it holds even when two requests
+      // arrive concurrently — a read-then-write check let both through and the
+      // phone acted twice on a double tap.
+      const clientId = body.clientId || null;
+      const claimed = await claimDeviceAction(env.DB, { action, clientId });
+      if (!claimed) {
+        return Response.json({ ok: true, action: action.action, queued: true, duplicate: true }, { headers: corsHeaders() });
+      }
 
-      return Response.json({ ok: true, action: action.action, queued: true }, { headers: corsHeaders() });
+      return Response.json({ ok: true, action: action.action, queued: true, clientId }, { headers: corsHeaders() });
     } catch (err) {
       return Response.json({ error: err.message }, { status: 500, headers: corsHeaders() });
     }
@@ -187,6 +189,7 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
       const patch = {
         lastAction: null,
         lastActionResult: JSON.stringify({ action, success, error, timestamp: new Date().toISOString() }),
+        lastActionStatus: 'done',
       };
       if (screenshotBase64) patch.lastScreenshotUrl = `data:image/png;base64,${screenshotBase64}`;
       if (checksum) patch.screenChecksum = checksum;
@@ -212,14 +215,20 @@ export async function handleEmulator(request, env, ctx, token, corsHeaders) {
   if (path === '/api/emulator/screenshot' && method === 'POST') {
     try {
       const body = await request.json();
-      const { screenshotBase64, checksum, url: screenshotUrl, uiHierarchy } = body;
+      const { screenshotBase64, checksum, url: screenshotUrl, uiHierarchy, smallScreenshotBase64 } = body;
 
-      await upsertDeviceState(env.DB, {
-        screenChecksum: checksum || null,
-        lastScreenshotUrl: screenshotUrl || (screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null),
-        uiHierarchy: uiHierarchy || null,
-        updatedAt: new Date().toISOString(),
-      });
+      // Only patch the fields this upload actually carries. upsertDeviceState
+      // merges, so sending uiHierarchy: null on a frame where the uiautomator
+      // dump failed would erase the last known UI tree and silently blind the
+      // agent. Omit absent fields instead.
+      const patch = { updatedAt: new Date().toISOString() };
+      const fullUrl = screenshotUrl || (screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null);
+      if (fullUrl) patch.lastScreenshotUrl = fullUrl;
+      if (smallScreenshotBase64) patch.lastScreenshotSmallUrl = `data:image/jpeg;base64,${smallScreenshotBase64}`;
+      if (checksum) patch.screenChecksum = checksum;
+      if (uiHierarchy) patch.uiHierarchy = uiHierarchy;
+
+      await upsertDeviceState(env.DB, patch);
 
       return Response.json({ ok: true, message: 'Screenshot saved' }, { headers: corsHeaders() });
     } catch (err) {

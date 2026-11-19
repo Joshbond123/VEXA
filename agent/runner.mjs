@@ -119,6 +119,43 @@ async function fetchWithTimeout(url, opts = {}) {
   }
 }
 
+/* ------------------------------------------------------- agent activity feed */
+// The runner is the only component that knows what actually happened, so it is
+// the only component that emits activity events. Events are buffered and flushed
+// to the Worker's /api/agent/events endpoint, which persists them; the frontend
+// streams them back over SSE. A failure to flush must never break a task run.
+let eventSeq = 0;
+const eventQueue = [];
+let eventFlushTimer = null;
+
+function emitEvent({ kind, title, detail = '', status = 'info', conversationId = null, automationId = null, executionId = null }) {
+  eventQueue.push({
+    id: `evt_${Date.now()}_${++eventSeq}`,
+    kind, title, detail, status,
+    conversationId, automationId, executionId,
+    createdAt: new Date().toISOString(),
+  });
+  if (!eventFlushTimer) eventFlushTimer = setTimeout(() => { flushEvents().catch(() => {}); }, 250);
+}
+
+async function flushEvents() {
+  eventFlushTimer = null;
+  if (!eventQueue.length) return;
+  const batch = eventQueue.splice(0, eventQueue.length);
+  const base = (process.env.VEXA_GATEWAY_URL || '').replace(/\/+$/, '');
+  if (!base) return; // no gateway configured; events stay local-only
+  try {
+    await fetchWithTimeout(`${base}/api/agent/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: batch }),
+      timeoutMs: 8000,
+    });
+  } catch {
+    // Drop the batch rather than replay it: stale activity is misleading.
+  }
+}
+
 /* ------------------------------------------------------------------ screenshot change detection (full-base64 checksum) */
 function screenChecksum(base64) {
   // Simple checksum of the full base64 string — changes if ANY pixel changes
@@ -672,6 +709,11 @@ async function runAutomation(automation, emulator) {
   let aiNextMinutes = null;
   let checkpoints = [];
 
+  // Every event carries the automation + execution id so the UI can show a live
+  // feed for this specific task.
+  const evBase = { automationId: automation.id, executionId: execId };
+  emitEvent({ ...evBase, kind: 'plan', title: 'Task received', detail: automation.instructions, status: 'running' });
+
   // Multi-run persistence: load any previously saved state for this automation
   const persistedState = loadAgentState(automation.id);
   const isResuming = persistedState !== null;
@@ -693,6 +735,7 @@ async function runAutomation(automation, emulator) {
     status = 'failed';
     failures = `Android emulator gateway is offline (${gwCheck.reason}). Start the Android Emulator workflow first.`;
     observedResults = 'Could not connect to running Android emulator.';
+    emitEvent({ ...evBase, kind: 'error', title: 'Emulator offline', detail: failures, status: 'failed' });
   } else {
     try {
       // If resuming, skip HOME press to preserve current screen state
@@ -776,6 +819,16 @@ async function runAutomation(automation, emulator) {
         }
 
         if (decision.app) appsInteracted.add(decision.app);
+
+        // Publish what the agent decided to do — grounded in the screen it just
+        // read. This is a real decision from the model, not a template.
+        emitEvent({
+          ...evBase,
+          kind: 'plan',
+          title: `Step ${step + 1}: ${decision.action}`,
+          detail: decision.thought || decision.summary || '',
+          status: 'running',
+        });
 
         // --- NORMALIZE MALFORMED AI ACTIONS ---
         // AI sometimes returns combined strings like "tap(151,664)" or "launch(com.android.vending)"
@@ -937,6 +990,19 @@ async function runAutomation(automation, emulator) {
         const desc = `${decision.action}(${decision.text || `${decision.x},${decision.y}`})`;
         actionsPerformed.push(`${desc} — ${decision.thought}` + (screenChanged ? ' [screen changed]' : ' [screen unchanged after retries]') + (stuckHint ? ' [LOOP DETECTED]' : ''));
 
+        // Publish the real tool result: whether the action executed and whether
+        // the screen actually changed. A retry that never moved the screen is
+        // reported as such, never as success.
+        emitEvent({
+          ...evBase,
+          kind: 'tool',
+          title: `Executed ${desc}`,
+          detail: screenChanged
+            ? `Device accepted ${decision.action}; screen changed.`
+            : `Device accepted ${decision.action}; screen did not change${lastActionError ? ` (${lastActionError})` : ''}.`,
+          status: screenChanged ? 'done' : 'warn',
+        });
+
         // --- AGGRESSIVE STUCK RECOVERY ---
         // If screen didn't change after all retries AND the action was a tap,
         // override with launch(package) to break out of the deadlock
@@ -1018,6 +1084,23 @@ async function runAutomation(automation, emulator) {
   automation.lastRunStatus = status;
   automation.runCount = (automation.runCount || 0) + 1;
   automation.updatedAt = finishedAt;
+
+  // Verification event: state the real, checked outcome.
+  emitEvent({
+    ...evBase,
+    kind: 'verify',
+    title: outcomeAchieved ? 'Task verified complete' : 'Task ended without a verified result',
+    detail: observedResults || failures || 'No observable result recorded.',
+    status: outcomeAchieved ? 'done' : 'failed',
+  });
+  emitEvent({
+    ...evBase,
+    kind: 'report',
+    title: `Run finished: ${status}`,
+    detail: `Actions: ${actionsPerformed.length}${nextRunAt ? ` · next run ${nextRunAt}` : ''}`,
+    status: outcomeAchieved ? 'done' : 'failed',
+  });
+  await flushEvents().catch(() => {});
 
   const report = {
     id: execId,

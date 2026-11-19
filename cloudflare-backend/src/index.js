@@ -16,7 +16,7 @@ import { handleAgent } from './agent.js';
 import { handleFrontend } from './frontend.js';
 import { handleSettings } from './settings.js';
 import { EmulatorSession } from './durable-objects.js';
-import { initDatabase, getDeviceState, upsertDeviceState } from './database.js';
+import { initDatabase, getDeviceState, upsertDeviceState, listAgentEvents } from './database.js';
 
 export { EmulatorSession };
 
@@ -114,23 +114,31 @@ export default {
       if (path === '/api/public/screenshot' && method === 'GET') {
         try {
           const state = await getDeviceState(env.DB);
-          if (state?.lastScreenshotUrl) {
-            const url = state.lastScreenshotUrl;
+          // A client on a weak link asks for a small frame with ?h=<px>. When a
+          // downscaled variant was uploaded by the emulator it is served instead
+          // of the multi-megabyte full PNG, which is what made the preview time
+          // out on slow connections.
+          const wantHeight = Number(url.searchParams.get('h') || 0);
+          const small = state?.lastScreenshotSmallUrl || null;
+          const full = state?.lastScreenshotUrl || null;
+          const chosen = wantHeight && wantHeight <= 540 && small ? small : (full || small);
+          if (chosen) {
             // Handle data URLs (base64-encoded images from emulator)
-            if (url.startsWith('data:')) {
-              const base64 = url.split(',')[1];
+            if (chosen.startsWith('data:')) {
+              const mime = (chosen.match(/^data:([^;]+);/) || [])[1] || 'image/png';
+              const base64 = chosen.split(',')[1];
               const imgBuf = Buffer.from(base64, 'base64');
               return new Response(imgBuf, {
-                headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
+                headers: { ...corsHeaders(), 'Content-Type': mime, 'Cache-Control': 'no-store' },
               });
             }
             // Handle regular URLs
             try {
-              const imgRes = await fetch(url);
+              const imgRes = await fetch(chosen);
               if (imgRes.ok) {
                 const imgBuf = await imgRes.arrayBuffer();
                 return new Response(imgBuf, {
-                  headers: { ...corsHeaders(), 'Content-Type': 'image/png' },
+                  headers: { ...corsHeaders(), 'Content-Type': imgRes.headers.get('content-type') || 'image/png', 'Cache-Control': 'no-store' },
                 });
               }
             } catch { /* fall through to blank */ }
@@ -194,6 +202,58 @@ export default {
     // === Emulator Routes ===
     if (path.startsWith('/api/emulator')) {
       return handleEmulator(request, env, ctx, token, corsHeaders);
+    }
+
+    // === Live agent activity stream (Server-Sent Events) ===
+    // Real execution events written by the agent runtime are pushed to the
+    // browser as they happen. The stream polls D1 for new events (Workers cannot
+    // hold a DB subscription open) and flushes them in order; the client passes
+    // the last seq it saw so a reconnect after a refresh resumes without gaps.
+    if (path === '/api/frontend/events/stream' && method === 'GET') {
+      const conversationId = url.searchParams.get('conversation') || null;
+      const automationId = url.searchParams.get('automation') || null;
+      let lastSeq = Number(url.searchParams.get('after') || 0);
+      const encoder = new TextEncoder();
+      let closed = false;
+      const stream = new ReadableStream({
+        async start(controller) {
+          const send = (event, data) => {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          };
+          send('open', { conversationId, automationId, after: lastSeq });
+          // Poll D1 for new events. Interval is short enough to feel live and
+          // long enough not to hammer the database.
+          const poll = async () => {
+            if (closed) return;
+            try {
+              const events = await listAgentEvents(env.DB, { conversationId, automationId, afterSeq: lastSeq, limit: 100 });
+              for (const ev of events) {
+                send('activity', ev);
+                lastSeq = Math.max(lastSeq, ev.seq);
+              }
+              send('heartbeat', { at: Date.now(), seq: lastSeq });
+            } catch (err) {
+              send('error', { message: err.message });
+            }
+          };
+          await poll();
+          const timer = setInterval(async () => {
+            if (closed) { clearInterval(timer); return; }
+            await poll();
+          }, 2000);
+          // Bounded lifetime so an abandoned tab cannot hold the worker open.
+          setTimeout(() => { closed = true; clearInterval(timer); try { controller.close(); } catch { /* already closed */ } }, 10 * 60 * 1000);
+        },
+        cancel() { closed = true; },
+      });
+      return new Response(stream, {
+        headers: {
+          ...corsHeaders(),
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+        },
+      });
     }
 
     // === Agent Routes ===

@@ -294,9 +294,27 @@ h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.25; }
   overflow: hidden; outline: none; cursor: crosshair;
   box-shadow: 0 22px 60px -14px rgba(0, 0, 0, 0.85), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   transition: transform var(--ease-out);
+  /* The phone viewport owns every touch that starts inside it. Without this a
+     vertical drag scrolls the page instead of the Android app, so swipes and
+     scrolling inside the emulator were impossible on a phone. `touch-action:
+     none` also suppresses the browser's own pinch-zoom and double-tap-zoom on
+     the canvas. */
+  touch-action: none;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: contain;
 }
 .device-stage:focus-visible { box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4); }
-.device-stage canvas { width: 100%; height: 100%; display: block; background: #000; }
+.device-stage canvas {
+  width: 100%; height: 100%; display: block; background: #000;
+  /* Stop the canvas from being its own scroll/pinch target. */
+  touch-action: none; pointer-events: none;
+}
+/* While a finger is down on the phone, lock page scroll so the gesture cannot
+   leak to the document (belt-and-braces alongside the JS scroll lock). */
+body.device-gesture-active { overflow: hidden; touch-action: none; }
+body.device-gesture-active .device-stage-wrap { overscroll-behavior: none; }
 
 .device-stage.fullscreen {
   position: fixed; inset: 14px; max-width: none; width: auto; height: auto;
@@ -322,6 +340,17 @@ h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.25; }
   padding: 9px 16px; border-top: 1px solid var(--line);
   font-family: var(--mono); font-size: 0.72rem; color: var(--dim);
 }
+/* Explicit "can the agent see the screen" indicator. It reports the real state:
+   whether a fresh frame and UI tree have arrived, not an assumption. */
+.device-capture-note {
+  display: flex; align-items: center; gap: 7px; margin: 9px 16px 0;
+  padding: 7px 10px; border-radius: 9px; font-size: 0.74rem;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--muted);
+}
+.device-capture-note.ok { border-color: rgba(16,185,129,0.35); color: #34d399; background: var(--ok-soft); }
+.device-capture-note.bad { border-color: rgba(239,68,68,0.3); color: #f87171; background: var(--bad-soft); }
+.device-capture-note.warn { border-color: rgba(245,158,11,0.3); color: #fbbf24; background: var(--warn-soft); }
+.device-capture-note .ic { flex-shrink: 0; width: 14px; height: 14px; }
 .device-controls {
   padding: 12px 14px 14px; border-top: 1px solid var(--line);
   display: flex; flex-direction: column; gap: 10px; background: var(--surface-2);
@@ -647,6 +676,73 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
 .empty-state p { font-size: 0.82rem; color: var(--muted); max-width: 400px; }
 
 /* ============================================================================
+   12b. Automation detail, live activity, execution history
+   ============================================================================ */
+.auto-detail-grid {
+  display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 16px; align-items: start;
+}
+.auto-detail-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.auto-conversation { max-height: 62vh; overflow-y: auto; padding: 14px; gap: 11px; }
+
+.activity-feed, .exec-history {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; max-height: 340px; overflow-y: auto;
+}
+.activity-row {
+  display: flex; gap: 9px; padding: 9px 10px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 10px; border-left: 3px solid var(--line-2);
+}
+.activity-row.done { border-left-color: #22c55e; }
+.activity-row.running { border-left-color: var(--brand-400); }
+.activity-row.warn { border-left-color: #f59e0b; }
+.activity-row.failed { border-left-color: #ef4444; }
+.activity-ic {
+  width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0;
+  display: grid; place-items: center; background: var(--surface-3); color: var(--muted);
+}
+.activity-ic .ic { width: 13px; height: 13px; }
+.activity-body { min-width: 0; flex: 1; }
+.activity-title { font-size: 0.79rem; font-weight: 600; }
+.activity-detail { font-size: 0.74rem; color: var(--muted); line-height: 1.45; margin-top: 2px; word-break: break-word; white-space: pre-wrap; }
+.activity-time { font-family: var(--mono); font-size: 0.63rem; color: var(--dim); margin-top: 3px; }
+
+.exec-item {
+  display: flex; flex-direction: column; gap: 5px; padding: 10px 11px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.exec-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.exec-time { font-family: var(--mono); font-size: 0.65rem; color: var(--dim); }
+.exec-meta { font-family: var(--mono); font-size: 0.68rem; color: var(--muted); }
+.exec-observed { font-size: 0.76rem; color: var(--text-2); line-height: 1.45; }
+.exec-fail { font-size: 0.76rem; color: #f87171; line-height: 1.45; }
+
+/* ============================================================================
+   12c. Chat history: rename control + mobile drawer
+   ============================================================================ */
+.chat-item-rename {
+  opacity: 0; background: none; border: 0; cursor: pointer; padding: 5px;
+  border-radius: 7px; color: var(--dim); display: grid; place-items: center;
+  transition: opacity var(--ease), background var(--ease), color var(--ease);
+}
+.chat-item:hover .chat-item-rename { opacity: 1; }
+.chat-item-rename:hover { background: var(--surface-3); color: var(--text); }
+.chat-item-rename .ic { width: 13px; height: 13px; }
+.chat-rename-input {
+  width: 100%; font-size: 0.8rem; padding: 5px 8px; border-radius: 7px;
+  background: var(--surface); border: 1px solid var(--brand-500);
+}
+.chat-rename-actions { display: flex; gap: 5px; margin-top: 5px; }
+.chat-rename-actions .btn { padding: 3px 9px; font-size: 0.7rem; }
+/* On touch devices there is no hover, so the rename/delete controls must always
+   be visible or they are unreachable. */
+@media (hover: none) {
+  .chat-item-rename, .chat-item-del { opacity: 1; }
+}
+.chat-history-backdrop { display: none; }
+
+/* ============================================================================
    13. Modal
    ============================================================================ */
 .modal {
@@ -695,6 +791,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
 @media (max-width: 1180px) {
   .workspace-grid { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .auto-detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 960px) {
@@ -706,6 +803,9 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
   .chat-panel { height: auto; min-height: 480px; }
   .chat-messages { max-height: 52vh; }
   .device-stage { max-width: 280px; }
+  .auto-detail-grid { grid-template-columns: minmax(0, 1fr); }
+  .auto-conversation { max-height: 46vh; }
+  .activity-feed, .exec-history { max-height: 260px; }
 }
 
 @media (max-width: 620px) {
@@ -714,6 +814,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
   .topbar-device { display: none; }
   .hide-sm { display: none; }
   .view-header h1 { font-size: 1.2rem; }
+  .view-header { gap: 10px; }
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
   .stat-card { padding: 11px; gap: 9px; }
   .stat-ic { width: 32px; height: 32px; }
@@ -730,6 +831,13 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.55; }
   .toast { min-width: 0; max-width: none; }
   .modal { padding: 10px; }
   .modal-card { max-height: 94vh; }
+  /* Automation detail stacks fully; controls wrap instead of overflowing. */
+  .auto-detail-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .panel-head-actions { flex-wrap: wrap; }
+  .view-header { flex-wrap: wrap; }
+  .auto-conversation { max-height: 52vh; }
+  .activity-feed, .exec-history { max-height: 240px; }
+  .auto-actions .btn { flex: 1 1 auto; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {

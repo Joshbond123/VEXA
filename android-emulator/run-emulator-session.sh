@@ -208,11 +208,29 @@ SCREENSHOT_PID=""
     # assemble the JSON body with files and stream it with --data-binary @file.
     if [ -s /tmp/vexa_screen.b64 ] || [ -s /tmp/vexa_ui.b64 ]; then
       CHECKSUM=$(md5sum /tmp/vexa_screen.b64 | cut -d' ' -f1)
-      python3 - /tmp/vexa_screen.b64 /tmp/vexa_ui.b64 "$CHECKSUM" > /tmp/vexa_upload.json << 'PYJSON'
+      # Downscaled JPEG variant: a full 1080x1920 PNG is several megabytes, which
+      # a client on a weak mobile link cannot download fast enough to look live.
+      # ffmpeg produces a ~40-80KB JPEG that the same client can poll smoothly.
+      : > /tmp/vexa_small.b64
+      if [ -s /tmp/vexa_screen.png ] && command -v ffmpeg >/dev/null 2>&1; then
+        ffmpeg -y -loglevel error -i /tmp/vexa_screen.png \
+          -vf "scale=-2:540" -q:v 6 /tmp/vexa_small.jpg 2>/dev/null || true
+        if [ -s /tmp/vexa_small.jpg ]; then
+          base64 -w 0 /tmp/vexa_small.jpg > /tmp/vexa_small.b64 2>/dev/null || : > /tmp/vexa_small.b64
+        fi
+      fi
+      python3 - /tmp/vexa_screen.b64 /tmp/vexa_ui.b64 "$CHECKSUM" /tmp/vexa_small.b64 > /tmp/vexa_upload.json << 'PYJSON'
 import json, sys
 screenshot = open(sys.argv[1]).read().strip()
 ui = open(sys.argv[2]).read().strip()
-json.dump({"screenshotBase64": screenshot, "checksum": sys.argv[3], "uiHierarchy": ui}, sys.stdout)
+body = {"screenshotBase64": screenshot, "checksum": sys.argv[3], "uiHierarchy": ui}
+try:
+    small = open(sys.argv[4]).read().strip()
+except Exception:
+    small = ""
+if small:
+    body["smallScreenshotBase64"] = small
+json.dump(body, sys.stdout)
 PYJSON
       CODE=$(curl -s -m 90 -o /dev/null -w "%{http_code}" -X POST "${CLOUDFLARE_WORKER_URL}/api/emulator/screenshot" \
         -H "Content-Type: application/json" \
