@@ -15,8 +15,11 @@ const source = buildKernel({
   dataset: 'black797/vexa-qwen38-q6k',
   modelFile: 'Qwen3.8-27B-Uncensored-Q6_K.gguf',
   servedModel: 'qwen3.8-27b-uncensored-q6_k',
+  // One slot, so a single request gets the whole context. Two slots halved it to
+  // 16k each, and an agent's system prompt plus tool schemas does not fit in that:
+  // llama-server answered 400 and the client looked silent.
   ctx: 32768,
-  parallel: 2,
+  parallel: 1,
 });
 
 const intro = [

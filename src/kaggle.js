@@ -141,23 +141,27 @@ export async function kernelInfo(cfg) {
 export async function sessionStatus(cfg) {
   const { owner, slug } = splitRef(cfg.kernelSlug);
   const data = await call(cfg, SERVICE_KERNELS, 'GetKernelSessionStatus', { userName: owner, kernelSlug: slug });
-  return { status: String(data.status || 'UNKNOWN').toUpperCase(), failureMessage: data.failureMessage || '' };
+  return {
+    status: String(data.status || 'UNKNOWN').toUpperCase(),
+    failureMessage: data.failureMessage || '',
+    kernelSessionId: data.kernelSessionId || null,
+  };
 }
 
-export async function pushKernel(cfg, source, { timeoutSeconds = 43200, title = 'VEXA Kaggle GPU runtime' } = {}) {
+export async function pushKernel(cfg, source, { timeoutSeconds = 43200, title = 'VEXA Kaggle GPU runtime', kernelType = 'script' } = {}) {
   const { owner, slug } = splitRef(cfg.kernelSlug);
   const data = await call(cfg, SERVICE_KERNELS, 'SaveKernel', {
     slug: `${owner}/${slug}`,
     newTitle: title,
     text: source,
     language: 'python',
-    kernelType: 'script',
+    kernelType,
     isPrivate: true,
     enableGpu: true,
     enableInternet: true,
     machineShape: 'NvidiaTeslaT4',
     sessionTimeoutSeconds: timeoutSeconds,
-    datasetDataSources: [cfg.dataset],
+    datasetDataSources: [cfg.dataset, cfg.toolsDataset].filter(Boolean),
     categoryIds: [],
   }, { timeout: 60000 });
   return { version: Number(data.versionNumber || 0), url: data.url || '', kernelId: data.kernelId || 0 };

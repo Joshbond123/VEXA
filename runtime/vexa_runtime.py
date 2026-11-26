@@ -4,6 +4,7 @@ Runs inside a private Kaggle script kernel. The Worker injects CONFIG above this
 file, registers the session, loads Qwen with llama.cpp across both T4 GPUs, proves
 the model answers, then long-polls the Worker for OpenAI-compatible jobs.
 """
+import glob
 import hashlib
 import http.client
 import json
@@ -790,17 +791,28 @@ def tunnel_url(text, allow_any=False):
 
 
 def ensure_ngrok():
-    """ngrok is not in the Kaggle image; fetch the official static build."""
+    """ngrok is not in the Kaggle image.
+
+    The binary ships in a small dataset: fetching it over the network here hangs, and
+    that stall happens before anything else can start. Download stays as a fallback.
+    """
     found = shutil.which("ngrok")
     if found:
         return found
     local = "/tmp/vexa-ngrok"
     if os.path.exists(local) and os.access(local, os.X_OK):
         return local
+    for candidate in sorted(glob.glob("/kaggle/input/*/ngrok")) + sorted(glob.glob("/kaggle/input/*/*/ngrok")):
+        if os.path.isfile(candidate):
+            shutil.copy2(candidate, local)
+            os.chmod(local, 0o755)
+            log(f"using the ngrok binary from {candidate}")
+            return local
     log("downloading ngrok for the endpoint")
     try:
         archive = "/tmp/vexa-ngrok.zip"
-        urllib.request.urlretrieve(NGROK_ZIP_URL, archive)
+        with urllib.request.urlopen(NGROK_ZIP_URL, timeout=90) as response, open(archive, "wb") as fh:
+            shutil.copyfileobj(response, fh)
         with zipfile.ZipFile(archive) as zf:
             zf.extractall("/tmp/vexa-ngrok-bin")
         shutil.copy2("/tmp/vexa-ngrok-bin/ngrok", local)
@@ -870,9 +882,17 @@ def start_tunnel(port, command=None, timeout=120):
                 found.set()
             elif re.search(r"level=error|\bERR\b", text):
                 log("tunnel: " + text[:200], "warn")
+                # A reserved domain accepts one agent. When another session still holds
+                # it, ngrok fails at once; waiting out the timeout only wastes the boot.
+                if re.search(r"ERR_NGROK_\d+|session closed|failed to start tunnel", text):
+                    holder.setdefault("error", text[:200])
+                    found.set()
 
     threading.Thread(target=watch, daemon=True).start()
     found.wait(timeout)
+    if holder.get("error"):
+        log("tunnel refused: " + holder["error"], "error")
+        return None
     return holder.get("url")
 
 
@@ -963,8 +983,8 @@ def direct_main():
         key = "vx-" + hashlib.sha256(os.urandom(32)).hexdigest()[:32]
     CONFIG["_apiKey"] = key
     log("VEXA direct mode: serving from this notebook; the relay is not in the path")
-    model_info, proof = boot_model()
-    threading.Thread(target=watchdog, daemon=True).start()
+    # Claim the domain before loading 22 GB: a reserved domain accepts one agent, so a
+    # leftover session makes this bind fail. Failing here costs seconds, not minutes.
     fixed = str(CONFIG.get("publicUrl") or os.environ.get("VEXA_PUBLIC_URL") or "").strip()
     if fixed:
         url = fixed
@@ -972,7 +992,12 @@ def direct_main():
     else:
         url = start_tunnel(PORT, os.environ.get("VEXA_TUNNEL_CMD") or CONFIG.get("tunnelCommand"))
     if not url:
-        raise RuntimeError("could not open a public tunnel for the direct endpoint")
+        raise RuntimeError(
+            "could not open a public tunnel for the direct endpoint; another session may "
+            "still hold the reserved domain - stop it and start this one again"
+        )
+    model_info, proof = boot_model()
+    threading.Thread(target=watchdog, daemon=True).start()
     base = url.rstrip("/") + "/v1"
     announce(url)
     threading.Thread(target=announce_loop, args=(url,), daemon=True).start()

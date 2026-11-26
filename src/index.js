@@ -89,8 +89,102 @@ async function gpu(env, path, body = {}, method = 'POST') {
 
 // The Worker builds the kernel source so a long-lived Durable Object can never
 // push a stale copy of runtime/vexa_runtime.py.
+function notebookJson(source) {
+  const cell = (kind, lines) => ({
+    cell_type: kind,
+    metadata: {},
+    source: lines.map((line, i, all) => (i === all.length - 1 ? line : line + '\n')),
+    ...(kind === 'code' ? { execution_count: null, outputs: [] } : {}),
+  });
+  return JSON.stringify({
+    cells: [
+      cell('markdown', ['# VEXA direct GPU endpoint', '', 'Serves the model over the reserved ngrok domain. No relay is involved.']),
+      cell('code', source.split('\n')),
+    ],
+    metadata: {
+      kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },
+      language_info: { name: 'python' },
+    },
+    nbformat: 4,
+    nbformat_minor: 5,
+  }, null, 1);
+}
+
+async function probePublicEndpoint(env) {
+  const base = await configuredBaseUrl(env);
+  if (!base) return { base: null, status: 0 };
+  try {
+    const res = await fetch(`${base}/v1/models`, {
+      headers: { authorization: `Bearer ${env.DIRECT_MODEL_KEY || ''}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    return { base, status: res.status };
+  } catch {
+    return { base, status: 0 };
+  }
+}
+
+async function directGpuState(env, cfg) {
+  const [session, probe] = await Promise.all([
+    kaggle.sessionStatus(cfg).catch((err) => ({ status: 'UNKNOWN', failureMessage: err.message })),
+    probePublicEndpoint(env),
+  ]);
+  const live = probe.status === 200;
+  const status = live
+    ? 'ready'
+    : session.status === 'RUNNING' ? 'loading'
+      : session.status === 'QUEUED' ? 'queued'
+        : session.status === 'ERROR' ? 'error' : 'off';
+  return {
+    status,
+    phase: live ? 'serving' : String(session.status || '').toLowerCase(),
+    progress: live ? 100 : status === 'loading' ? 60 : status === 'queued' ? 20 : 0,
+    detail: live
+      ? `Answering on ${probe.base}`
+      : status === 'loading'
+        ? 'Kaggle kernel is running; the model is still loading.'
+        : status === 'queued'
+          ? 'Kaggle queued the kernel; a GPU is being assigned.'
+          : session.failureMessage || 'No kernel is running. Start it to bring the endpoint back.',
+    endpoint: probe.base,
+    sessionId: session.kernelSessionId || null,
+    readyAt: null,
+    kernelVersion: null,
+    error: status === 'error' ? session.failureMessage || 'Kernel failed' : null,
+  };
+}
+
 async function startGpu(env, reason) {
   const cfg = await config(env);
+  if (env.NGROK_DOMAIN) {
+    // A second session cannot bind the same reserved domain, and it would sit on a GPU
+    // for its whole timeout, so refuse instead of stacking runs.
+    const current = await kaggle.sessionStatus(cfg).catch(() => null);
+    if (current && (current.status === 'RUNNING' || current.status === 'QUEUED')) {
+      return { ok: true, already: true, mode: 'direct', status: current.status,
+        detail: 'A kernel is already running; it claims the domain when it starts.' };
+    }
+    const source = buildKernel({
+      direct: true,
+      directApiKey: env.DIRECT_MODEL_KEY || '',
+      ngrokAuthtoken: env.NGROK_AUTHTOKEN || '',
+      ngrokDomain: env.NGROK_DOMAIN,
+      dataset: cfg.dataset,
+      modelFile: cfg.modelFile,
+      servedModel: cfg.servedModel,
+      ctx: Number(cfg.ctx) || 32768,
+      parallel: 1,
+      kernelSlug: cfg.kernelSlug,
+    });
+    const pushed = await kaggle.pushKernel({ ...cfg, toolsDataset: 'black797/vexa-tools' }, notebookJson(source), {
+      title: 'VEXA direct GPU endpoint',
+      kernelType: 'notebook',
+    });
+    await env.DB.prepare('INSERT INTO events (ts, kind, message, detail) VALUES (?, ?, ?, ?)')
+      .bind(now(), 'gpu', `started the direct kernel (v${pushed.version})`, JSON.stringify({ reason }))
+      .run().catch(() => {});
+    return { ok: true, mode: 'direct', version: pushed.version, url: pushed.url, reason };
+  }
   const nonce = randomHex(16);
   const source = buildKernel({ ...cfg, runtimeKey: env.INTERNAL_RUNTIME_KEY, sessionNonce: nonce });
   return gpu(env, '/ensure', { reason, nonce, source });
@@ -164,6 +258,15 @@ async function apiRoute(request, env, path, url) {
     if (path === '/api/gpu/start' && request.method === 'POST') return json(await startGpu(env, op.username || 'dashboard'));
     if (path === '/api/gpu/stop' && request.method === 'POST') {
       const body = await readJson(request);
+      if (env.NGROK_DOMAIN) {
+        const cfg = await config(env);
+        const session = await kaggle.sessionStatus(cfg).catch(() => null);
+        if (!session || !session.kernelSessionId) {
+          return error('No Kaggle session to cancel; stop the notebook in Kaggle instead.', 400);
+        }
+        await kaggle.cancelSession(cfg, session.kernelSessionId);
+        return json({ ok: true, cancelled: session.kernelSessionId });
+      }
       return json(await gpu(env, '/stop', { reason: String(body.reason || 'dashboard') }));
     }
     if (path === '/api/gpu/hold' && request.method === 'POST') {
@@ -244,7 +347,9 @@ async function overview(env, op) {
   const cfg = await config(env);
   const { values, meta } = await readSettings(env);
   const [state, quota, dataset, kernel] = await Promise.all([
-    gpu(env, '/state', {}, 'GET').catch(() => null),
+    (env.NGROK_DOMAIN
+      ? directGpuState(env, cfg)
+      : gpu(env, '/state', {}, 'GET')).catch(() => null),
     kaggle.quota(cfg).catch((err) => ({ error: err.message })),
     kaggle.datasetInfo(cfg).catch((err) => ({ exists: false, error: err.message })),
     kaggle.kernelInfo(cfg).catch((err) => ({ exists: false, error: err.message })),

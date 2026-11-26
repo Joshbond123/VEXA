@@ -7,7 +7,10 @@
   "is_private": true,
   "enable_gpu": true,
   "enable_internet": true,
-  "dataset_sources": ["black797/vexa-qwen38-q6k"],
+  "dataset_sources": [
+    "black797/vexa-qwen38-q6k",
+    "black797/vexa-tools"
+  ],
   "competition_sources": [],
   "kernel_sources": []
 }
