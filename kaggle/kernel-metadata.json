@@ -1,0 +1,13 @@
+{
+  "id": "black797/vexa-direct-gpu-endpoint",
+  "title": "VEXA direct GPU endpoint",
+  "code_file": "vexa-direct.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": ["black797/vexa-qwen38-q6k"],
+  "competition_sources": [],
+  "kernel_sources": []
+}

@@ -3,8 +3,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { buildKernel } from '../src/kernel.js';
 
+// Secrets come from the environment so the committed notebook only ever holds
+// placeholders; CI fills them in before pushing to Kaggle.
+const env = (name, fallback) => (process.env[name] || fallback).trim();
+
 const source = buildKernel({
   direct: true,
+  directApiKey: env('VEXA_DIRECT_KEY', '<MODEL_KEY>'),
+  ngrokAuthtoken: env('VEXA_NGROK_AUTHTOKEN', '<NGROK_AUTHTOKEN>'),
+  ngrokDomain: env('VEXA_NGROK_DOMAIN', '<NGROK_DOMAIN>'),
   dataset: 'black797/vexa-qwen38-q6k',
   modelFile: 'Qwen3.8-27B-Uncensored-Q6_K.gguf',
   servedModel: 'qwen3.8-27b-uncensored-q6_k',
@@ -15,18 +22,16 @@ const source = buildKernel({
 const intro = [
   '# VEXA direct GPU endpoint',
   '',
-  'Serves Qwen straight from this notebook. Inference never passes through the',
-  'Worker or its Durable Objects, so no Cloudflare quota applies.',
+  'Serves Qwen from this notebook over the ngrok static domain in the config.',
+  'There is no Cloudflare Worker, relay or Durable Object anywhere in the path:',
+  'OpenHands talks to ngrok, ngrok talks to this notebook.',
   '',
   'Before running:',
   '',
   '1. Settings -> Accelerator -> **GPU T4 x2**.',
-  '2. Settings -> Internet -> **on** (needed for cloudflared and any download).',
+  '2. Settings -> Internet -> **on**.',
   '3. Add the model dataset as input: `black797/vexa-qwen38-q6k`.',
-  '4. Run all. The last lines print a base URL and an API key; paste both into your',
-  '   OpenAI/OpenHands profile. The URL is new on every start.',
-  '',
-  'Setting `VEXA_DIRECT_KEY` in the notebook keeps the key stable across restarts.',
+  '4. Run all. The domain is fixed, so the base URL never changes between starts.',
 ];
 
 const cell = (kind, lines, extra = {}) => ({
