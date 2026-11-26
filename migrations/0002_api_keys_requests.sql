@@ -1,4 +1,4 @@
--- Older deployments created api_keys without the requests counter.
--- SQLite has no ADD COLUMN IF NOT EXISTS, so apply once:
---   wrangler d1 execute vexa_colab --remote --file migrations/0002_api_keys_requests.sql
-ALTER TABLE api_keys ADD COLUMN requests INTEGER NOT NULL DEFAULT 0;
+-- No-op: `requests` is created by 0001_init.sql. The original ALTER broke every fresh
+-- database ("duplicate column name: requests"), so the column now comes from the table
+-- definition and this file only keeps the migration name in sequence.
+SELECT 1;

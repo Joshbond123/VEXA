@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS gpu_state (
   status TEXT, phase TEXT, detail TEXT, session_id TEXT, kernel_version INTEGER,
   started_at INTEGER, allocated_at INTEGER, ready_at INTEGER, last_heartbeat INTEGER,
   last_activity INTEGER, active_jobs INTEGER, progress REAL, gpus_json TEXT,
-  model_json TEXT, error TEXT, stop_reason TEXT, updated_at INTEGER
+  model_json TEXT, error TEXT, stop_reason TEXT, updated_at INTEGER,
+  -- The coordinator keeps a full copy of its state here so a redeploy (a new Durable
+  -- Object instance) can restore a live session, and `epoch` fences off instances that
+  -- are still running the previous bundle.
+  state_json TEXT, epoch INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_gpu_sessions_started ON gpu_sessions(started_at DESC);

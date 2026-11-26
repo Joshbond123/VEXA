@@ -36,6 +36,9 @@ export class GpuHub {
     this.storage = state.storage;
     this.jobs = new Map();
     this.waiters = new Map();
+    // Idle runtimes long-poll /poll; without this every idle slot cost 5 requests/second.
+    this.pollWaiters = new Set();
+    this.pollLock = Promise.resolve();
     this.s = null;
     this.epoch = null;
   }
@@ -51,7 +54,7 @@ export class GpuHub {
     // A new instance (new deploy) starts empty: rebuild from D1 so a live GPU
     // session and its runtime token survive the rollout.
     try {
-      const row = await this.env.DB.prepare('SELECT state_json FROM gpu_state WHERE id = 1').first();
+      const row = await this.env.DB.prepare('SELECT * FROM gpu_state WHERE id = 1').first();
       if (row && row.state_json) this.s = { ...blankState(), ...JSON.parse(row.state_json) };
       // Claim a new epoch: any instance still running the previous bundle must stop
       // acting, otherwise its alarms can cancel a healthy Kaggle session after a deploy.
@@ -89,20 +92,25 @@ export class GpuHub {
         s.readyAt, s.lastHeartbeat, s.lastActivity, s.activeJobs, s.progress,
         JSON.stringify(s.gpus || []), JSON.stringify(s.model || null), s.error, s.stopReason, s.updatedAt,
         JSON.stringify(s)).run();
-    } catch {}
+    } catch (err) {
+      // Silent failures here cost session restore after a deploy; surface the drift.
+      console.warn('gpu_state mirror failed:', err && err.message);
+    }
   }
 
   async adoptEpoch() {
     try {
-      const row = await this.env.DB.prepare('SELECT epoch FROM gpu_state WHERE id = 1').first();
-      this.epoch = row ? Number(row.epoch) : null;
-    } catch {}
+      const row = await this.env.DB.prepare('SELECT * FROM gpu_state WHERE id = 1').first();
+      this.epoch = row && row.epoch != null ? Number(row.epoch) : null;
+    } catch (err) {
+      console.warn('gpu_state epoch unavailable:', err && err.message);
+    }
   }
 
   async stillOwner() {
     if (this.epoch == null) return true;
     try {
-      const row = await this.env.DB.prepare('SELECT epoch FROM gpu_state WHERE id = 1').first();
+      const row = await this.env.DB.prepare('SELECT * FROM gpu_state WHERE id = 1').first();
       return !row || Number(row.epoch) === this.epoch;
     } catch {
       return true;
@@ -171,7 +179,11 @@ export class GpuHub {
       case '/log': return this.json(await this.log(body));
       case '/stopped': return this.json(await this.stopped(body));
       case '/runtimeerror': return this.json(await this.runtimeError(body));
-      case '/poll': return this.json(await this.poll(url.searchParams.get('slot')));
+      // `wait` is seconds (the runtime asks for 25); poll() takes milliseconds.
+      case '/poll': return this.json(await this.poll(
+        url.searchParams.get('slot'),
+        Math.max(0, Math.min(25, Number(url.searchParams.get('wait') || 0))) * 1000,
+      ));
       default: return this.json({ error: 'unknown coordinator route' }, 404);
     }
   }
@@ -362,25 +374,67 @@ export class GpuHub {
     return { ok: true };
   }
 
-  async poll(slot) {
+  lock() {
+    const prev = this.pollLock;
+    let release;
+    this.pollLock = new Promise((resolve) => { release = resolve; });
+    return prev.then(() => release);
+  }
+
+  wakePollers() {
+    for (const fn of [...this.pollWaiters]) fn();
+    this.pollWaiters.clear();
+  }
+
+  async takeJob(slot) {
+    // Two slots poll concurrently, and every storage step is an await: without the lock
+    // both could lease the same queued job and run it twice.
+    const release = await this.lock();
+    try {
+      const queue = await this.storage.list({ prefix: 'queue:' });
+      const items = [...queue.entries()].sort((a, b) => Number(a[1]) - Number(b[1]));
+      for (const [key] of items) {
+        const id = key.slice('queue:'.length);
+        const meta = await this.storage.get('job:' + id);
+        await this.storage.delete(key);
+        if (!meta || meta.status !== 'queued') continue;
+        meta.status = 'running'; meta.leasedAt = now(); meta.slot = Number(slot) || 0;
+        await this.storage.put('job:' + id, meta);
+        this.jobs.set(id, { chunks: [], done: false, result: null, usage: null, error: null, cancelled: false, meta });
+        return { stop: false, job: { id, body: meta.body, stream: !!meta.stream } };
+      }
+      return null;
+    } finally {
+      release();
+    }
+  }
+
+  async poll(slot, waitMs = 0) {
     const s = this.s;
     if (s.stopRequested) return { stop: true, reason: s.stopReason };
     // A runtime that polls without a live session is orphaned: tell it to exit
     // so the Kaggle GPU is released instead of idling for the session timeout.
     if (!(s.status === 'loading' || s.status === 'ready' || s.status === 'busy')) return { stop: true, reason: 'no active GPU session' };
-    const queue = await this.storage.list({ prefix: 'queue:' });
-    const items = [...queue.entries()].sort((a, b) => Number(a[1]) - Number(b[1]));
-    for (const [key] of items) {
-      const id = key.slice('queue:'.length);
-      const meta = await this.storage.get('job:' + id);
-      await this.storage.delete(key);
-      if (!meta || meta.status !== 'queued') continue;
-      meta.status = 'running'; meta.leasedAt = now(); meta.slot = Number(slot) || 0;
-      await this.storage.put('job:' + id, meta);
-      this.jobs.set(id, { chunks: [], done: false, result: null, usage: null, error: null, cancelled: false, meta });
-      return { stop: false, job: { id, body: meta.body, stream: !!meta.stream } };
-    }
-    return { stop: false, job: null };
+    const found = await this.takeJob(slot);
+    if (found) return found;
+    const limit = Math.max(0, Math.min(25000, Number(waitMs) || 0));
+    if (!limit) return { stop: false, job: null };
+    return await new Promise((resolve) => {
+      let settled = false;
+      const finish = async (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.pollWaiters.delete(fn);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish({ stop: false, job: null, timeout: true }), limit);
+      const fn = async () => {
+        const job = await this.takeJob(slot);
+        await finish(job || { stop: false, job: null });
+      };
+      this.pollWaiters.add(fn);
+    });
   }
 
   async enqueue(body) {
@@ -396,6 +450,7 @@ export class GpuHub {
     s.lastActivity = now();
     await this.save();
     await this.state.storage.setAlarm(now() + 5000);
+    this.wakePollers();
     return { id, status: s.status };
   }
 

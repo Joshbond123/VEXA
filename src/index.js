@@ -15,13 +15,75 @@ function hub(env) {
   return env.GPU.get(env.GPU.idFromName(`vexa-gpu-${version}`));
 }
 
+// Every call here is one billed Durable Object request. The free plan allows 100k/day
+// and fails every call once spent, so remember the outage: retrying clients must not
+// keep hammering the hub, and a single probe every few minutes re-opens after an upgrade.
+const QUOTA_PROBE_MS = 5 * 60 * 1000;
+let quotaBlockedUntil = 0;
+let quotaProbeAfter = 0;
+
+function nextUtcMidnight() {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+function isQuotaError(text) {
+  return /durable objects free tier|exceeded allowed volume/i.test(String(text || ''));
+}
+
+function quotaError() {
+  if (!quotaBlockedUntil) quotaBlockedUntil = nextUtcMidnight();
+  return Object.assign(new Error(
+    'GPU control plane unavailable: the Durable Objects free-tier daily quota is exhausted. '
+    + 'It resets at 00:00 UTC; upgrading the Cloudflare plan removes the cap.',
+  ), { status: 503, retryAt: quotaBlockedUntil, quota: true });
+}
+
+const CLIENT_ERRORS = { 'Invalid JSON body': 400, 'Request body too large': 413 };
+
+function gatewayError(err) {
+  const status = Number(err && err.status) || CLIENT_ERRORS[err && err.message] || 500;
+  const message = (err && err.message) || 'Worker error';
+  const type = status === 503 ? 'service_unavailable' : status < 500 ? 'invalid_request_error' : 'server_error';
+  const body = { error: { message, type } };
+  const headers = { 'cache-control': 'no-store' };
+  if (err && err.retryAt) {
+    body.error.retry_after = new Date(err.retryAt).toISOString();
+    headers['retry-after'] = String(Math.max(1, Math.ceil((err.retryAt - now()) / 1000)));
+  }
+  console.error(message, (err && err.stack) || '');
+  return json(body, { status, headers });
+}
+
 async function gpu(env, path, body = {}, method = 'POST') {
-  const res = await hub(env).fetch(`https://hub${path}`, {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: method === 'GET' ? undefined : JSON.stringify(body),
-  });
-  return res.json();
+  if (quotaBlockedUntil > now() && now() < quotaProbeAfter) throw quotaError();
+  let res;
+  try {
+    res = await hub(env).fetch(`https://hub${path}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: method === 'GET' ? undefined : JSON.stringify(body),
+    });
+  } catch (err) {
+    if (isQuotaError(err && err.message)) {
+      quotaProbeAfter = now() + QUOTA_PROBE_MS;
+      throw quotaError();
+    }
+    throw err;
+  }
+  const text = await res.text();
+  if (isQuotaError(text)) {
+    quotaProbeAfter = now() + QUOTA_PROBE_MS;
+    throw quotaError();
+  }
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw Object.assign(new Error(`GPU hub returned a non-JSON response (HTTP ${res.status})`), { status: 502 });
+  }
+  quotaBlockedUntil = 0;
+  return data;
 }
 
 // The Worker builds the kernel source so a long-lived Durable Object can never
@@ -50,12 +112,16 @@ function bearer(request) {
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    if (path.startsWith('/api/runtime/')) return runtimeRoute(request, env, path);
-    if (path === '/v1/models' || path === '/v1/chat/completions') return openaiRoute(request, env, path);
-    if (path.startsWith('/api/')) return apiRoute(request, env, path, url);
-    return env.ASSETS.fetch(request);
+    try {
+      const url = new URL(request.url);
+      const path = url.pathname;
+      if (path.startsWith('/api/runtime/')) return await runtimeRoute(request, env, path);
+      if (path === '/v1/models' || path === '/v1/chat/completions') return await openaiRoute(request, env, path);
+      if (path.startsWith('/api/')) return await apiRoute(request, env, path, url);
+      return await env.ASSETS.fetch(request);
+    } catch (err) {
+      return gatewayError(err);
+    }
   },
 };
 
@@ -144,7 +210,7 @@ async function apiRoute(request, env, path, url) {
     return error('Not found', 404);
   } catch (err) {
     if (err instanceof kaggle.KaggleError) return error(err.message, err.status === 401 ? 400 : 502, { kaggle: true });
-    return error(err.message || 'Internal error', 500);
+    return gatewayError(err.status ? err : Object.assign(err, { status: 500 }));
   }
 }
 
@@ -210,7 +276,8 @@ async function runtimeRoute(request, env, path) {
   };
   if (sub === '/poll') {
     const slot = url.searchParams.get('slot') || '0';
-    return forward(`/poll?slot=${encodeURIComponent(slot)}`, null, 'GET');
+    const wait = url.searchParams.get('wait') || '0';
+    return forward(`/poll?slot=${encodeURIComponent(slot)}&wait=${encodeURIComponent(wait)}`, null, 'GET');
   }
   if (sub === '/heartbeat' || sub === '/phase' || sub === '/log' || sub === '/stopped' || sub === '/error') {
     const body = await readJson(request);
@@ -290,7 +357,7 @@ async function openaiRoute(request, env, path) {
     }
     state = await waitForGpu(env, state, now() + WARM_TIMEOUT_MS);
   } catch (err) {
-    return error(err.message, err.status || 503);
+    return gatewayError(Object.assign(err, { status: err.status || 503 }));
   }
   const job = await gpu(env, '/enqueue', {
     body: payload, stream, keyId: row.id, promptChars: JSON.stringify(body.messages).length,
@@ -304,7 +371,9 @@ async function openaiRoute(request, env, path) {
       const started = now();
       try {
         for (;;) {
+          if (request.signal.aborted) break;
           if (now() - started > JOB_TIMEOUT_MS) {
+            gpu(env, '/cancel', { job: job.id }).catch(() => {});
             await writer.write(encoder.encode(sse(apiError('Generation timed out', 'upstream_timeout'))));
             break;
           }

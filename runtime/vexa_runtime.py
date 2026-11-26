@@ -178,7 +178,9 @@ def heartbeat_loop():
                 log(f"control plane unreachable for 3 minutes ({err}); exiting to protect quota", "error")
                 stop_event.set()
                 break
-        stop_event.wait(5)
+        # Heartbeats are billed control-plane requests: the control plane only fails a
+        # session that goes quiet for 150s, so poll fast while loading and slowly when idle.
+        stop_event.wait(5 if not ready_event.is_set() else 20)
 
 
 def set_phase(name, detail="", progress=None, extra=None):
@@ -603,7 +605,10 @@ def stream_job(job_id, body):
     def queue(payload):
         nonlocal seq, cancelled, last
         chunks.append(payload)
-        if len(chunks) >= 8 or time.time() - last >= 0.04:
+        # Each flush is one billed Durable Object request on the control plane, and the
+        # free plan allows 100k/day (the client long-polls, so it costs one more per flush).
+        # Two flushes per second instead of one per token keeps a day of generation in budget.
+        if len(chunks) >= 48 or time.time() - last >= 0.5:
             cancelled, seq = flush(job_id, chunks, seq)
             del chunks[:]
             last = time.time()
