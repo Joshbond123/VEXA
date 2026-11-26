@@ -115,6 +115,7 @@ export default {
     try {
       const url = new URL(request.url);
       const path = url.pathname;
+      if (path === '/api/direct' || path === '/api/direct/announce') return await directRoute(request, env);
       if (path.startsWith('/api/runtime/')) return await runtimeRoute(request, env, path);
       if (path === '/v1/models' || path === '/v1/chat/completions') return await openaiRoute(request, env, path);
       if (path.startsWith('/api/')) return await apiRoute(request, env, path, url);
@@ -124,6 +125,28 @@ export default {
     }
   },
 };
+
+// A direct kernel has no session and therefore no Durable Object. It announces the
+// public URL of its tunnel here instead, which costs one D1 write and nothing else.
+async function directRoute(request, env) {
+  const key = env.DIRECT_ANNOUNCE_KEY;
+  if (!key) return error('Direct endpoint reporting is not configured', 503);
+  if (request.headers.get('x-runtime-key') !== key) return error('Forbidden', 403);
+  if (request.method === 'GET') {
+    const row = await env.DB.prepare(
+      "SELECT message, detail, ts FROM events WHERE kind = 'direct-endpoint' ORDER BY ts DESC LIMIT 1",
+    ).first();
+    if (!row) return json({ endpoint: null });
+    return json({ endpoint: { url: row.message, detail: row.detail, ts: row.ts } });
+  }
+  const body = await readJson(request);
+  const target = String(body.url || '').trim();
+  if (!/^https:\/\/[^\s]+$/.test(target)) return error('A public https url is required', 400);
+  await env.DB.prepare('INSERT INTO events (ts, kind, message, detail) VALUES (?, ?, ?, ?)')
+    .bind(now(), 'direct-endpoint', target, JSON.stringify({ model: body.model || null, kernelRef: body.kernelRef || null }))
+    .run();
+  return json({ ok: true, url: target });
+}
 
 async function apiRoute(request, env, path, url) {
   if (path === '/api/health') return json({ ok: true, ts: now(), service: 'vexa' });

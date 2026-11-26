@@ -19,6 +19,10 @@ export function buildKernel(cfg) {
     // Worker, so inference costs no Durable Object requests at all.
     direct: !!cfg.direct,
     directApiKey: cfg.directApiKey || '',
+    announceUrl: cfg.announceUrl || '',
+    announceKey: cfg.announceKey || '',
+    tunnelCommand: cfg.tunnelCommand || '',
+    publicUrl: cfg.publicUrl || '',
   };
   // JSON is not valid Python: emit a JSON string literal and decode it in the kernel.
   const literal = JSON.stringify(JSON.stringify(config));

@@ -789,23 +789,34 @@ def ensure_cloudflared():
         return None
 
 
-def start_tunnel(port, timeout=120):
-    """Open a public HTTPS tunnel to llama-server and return its URL."""
+def start_tunnel(port, command=None, timeout=120):
+    """Open a public HTTPS tunnel to llama-server and return its URL.
+
+    `command` replaces cloudflared with any tunnel service, e.g. a permanent one: its
+    output is scraped for the first https URL, which is how hosted connectors report
+    themselves. `{port}` in the command is replaced with the llama-server port.
+    """
     global tunnel_proc
-    exe = ensure_cloudflared()
-    if not exe:
-        return None
-    tunnel_proc = subprocess.Popen(
-        [exe, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate", "--loglevel", "info"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
-    )
+    if command:
+        tunnel_proc = subprocess.Popen(
+            ["/bin/sh", "-c", command.replace("{port}", str(port))],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
+        )
+    else:
+        exe = ensure_cloudflared()
+        if not exe:
+            return None
+        tunnel_proc = subprocess.Popen(
+            [exe, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate", "--loglevel", "info"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
+        )
     found = threading.Event()
     holder = {}
 
     def watch():
         for line in tunnel_proc.stdout:
             text = line.rstrip()
-            match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", text)
+            match = re.search(r"https://[a-z0-9][a-z0-9.-]+\.[a-z]{2,}", text)
             if match and not found.is_set():
                 holder["url"] = match.group(0)
                 found.set()
@@ -815,6 +826,30 @@ def start_tunnel(port, timeout=120):
     threading.Thread(target=watch, daemon=True).start()
     found.wait(timeout)
     return holder.get("url")
+
+
+def announce(url):
+    """Publish the public URL; one D1 write on the Worker, no Durable Object involved."""
+    target = str(CONFIG.get("announceUrl") or "").rstrip("/")
+    key = str(CONFIG.get("announceKey") or "")
+    if not target or not key:
+        return
+    payload = {"url": url, "model": CONFIG.get("servedModel"), "kernelRef": CONFIG.get("kernelSlug")}
+    for attempt in range(4):
+        try:
+            _http(target + "/api/direct/announce", payload, {"x-runtime-key": key}, 20)
+            log("published the direct endpoint")
+            return
+        except Exception as err:
+            log(f"announce attempt {attempt + 1} failed: {err}", "warn")
+            time.sleep(3)
+
+
+def announce_loop(url):
+    while not stop_event.is_set():
+        stop_event.wait(300)
+        if not stop_event.is_set():
+            announce(url)
 
 
 def boot_model():
@@ -882,10 +917,17 @@ def direct_main():
     log("VEXA direct mode: serving from this notebook; the relay is not in the path")
     model_info, proof = boot_model()
     threading.Thread(target=watchdog, daemon=True).start()
-    url = start_tunnel(PORT)
+    fixed = str(CONFIG.get("publicUrl") or os.environ.get("VEXA_PUBLIC_URL") or "").strip()
+    if fixed:
+        url = fixed
+        log(f"using the configured permanent endpoint {url}")
+    else:
+        url = start_tunnel(PORT, os.environ.get("VEXA_TUNNEL_CMD") or CONFIG.get("tunnelCommand"))
     if not url:
         raise RuntimeError("could not open a public tunnel for the direct endpoint")
     base = url.rstrip("/") + "/v1"
+    announce(url)
+    threading.Thread(target=announce_loop, args=(url,), daemon=True).start()
     rule = "=" * 64
     log(rule)
     log("VEXA DIRECT ENDPOINT - copy these into your OpenAI / OpenHands profile")
