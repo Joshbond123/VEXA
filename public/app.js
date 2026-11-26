@@ -368,6 +368,11 @@ function connectCard() {
       : el('p', { class: 'hint', text: 'Create a key to fill in the snippets below.' }),
     el('dl', { class: 'kv' },
       el('dt', { text: 'Base URL' }), el('dd', {}, el('span', { class: 'mono', text: base }), copyButton(base)),
+      state.overview && state.overview.direct
+        ? [el('dt', { text: 'Direct endpoint' }),
+           el('dd', {}, el('span', { class: 'mono', text: `${state.overview.direct.url}/v1` }),
+             copyButton(`${state.overview.direct.url}/v1`))]
+        : null,
       el('dt', { text: 'Model' }), el('dd', {}, el('span', { class: 'mono', text: model }), copyButton(model)),
       el('dt', { text: '' }), el('dd', {}, el('span', { class: 'hint', text: 'Paste this exact string into the OpenHands / LiteLLM model field — the openai/ prefix is required. Plain OpenAI SDKs may use the id without it.' })),
       el('dt', { text: 'API key' }), el('dd', {},
