@@ -340,8 +340,29 @@ function connectCard() {
     ? `Served by the direct GPU endpoint (${state.overview.direct.host}) — the relay is not used.`
     : 'No direct kernel is reporting right now, so requests go through the relay.';
 
+  const testResult = el('p', { class: 'hint', text: '' });
+  const testButton = el('button', {
+    class: 'ghost',
+    text: 'Test model connection',
+    onclick: async () => {
+      testButton.disabled = true;
+      testResult.textContent = 'Testing… this can take 30 s on a cold prompt.';
+      try {
+        const res = await api('/api/model-test', { method: 'POST' });
+        testResult.textContent = res.ok
+          ? `OK — ${res.engine} (${res.host}) answered “${res.reply}” in ${(res.ms / 1000).toFixed(1)} s.`
+          : `Failed — ${res.error || `status ${res.status}`}`;
+      } catch (err) {
+        testResult.textContent = `Failed — ${err.message}`;
+      } finally {
+        testButton.disabled = false;
+      }
+    },
+  });
+
   return card('Connect OpenHands',
     el('p', { class: 'hint', text: engine }),
+    el('p', {}, testButton, testResult),
     secret
       ? el('p', { class: 'hint', text: `Key “${state.lastKey.name}” created. This is the only time it is displayed — copy it now.` })
       : el('p', { class: 'hint', text: 'Create a key to fill in the snippets below.' }),

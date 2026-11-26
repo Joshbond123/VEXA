@@ -35,7 +35,8 @@ function quotaError() {
   if (!quotaBlockedUntil) quotaBlockedUntil = nextUtcMidnight();
   return Object.assign(new Error(
     'GPU control plane unavailable: the Durable Objects free-tier daily quota is exhausted. '
-    + 'It resets at 00:00 UTC; upgrading the Cloudflare plan removes the cap.',
+    + 'It resets at 00:00 UTC; upgrading the Cloudflare plan removes the cap. '
+    + 'A running direct kernel serves requests without the relay, so start one on Kaggle.',
   ), { status: 503, retryAt: quotaBlockedUntil, quota: true });
 }
 
@@ -117,6 +118,7 @@ export default {
       const path = url.pathname;
       if (path === '/api/direct' || path === '/api/direct/announce') return await directRoute(request, env);
       if (path.startsWith('/api/runtime/')) return await runtimeRoute(request, env, path);
+      if (path === '/api/model-test' && request.method === 'POST') return await modelTest(request, env);
       if (path.startsWith('/direct/v1/')) return await directProxy(request, env, path);
       if (path === '/v1/models' || path === '/v1/chat/completions') return await openaiRoute(request, env, path);
       if (path.startsWith('/api/')) return await apiRoute(request, env, path, url);
@@ -361,9 +363,83 @@ async function freshDirectEndpoint(env) {
   return row.message.replace(/\/+$/, '');
 }
 
+// A kernel can stop announcing while its tunnel still answers (a dead announce
+// thread, a slow D1 write). Trust a tunnel that responds rather than falling back
+// to a relay that may have no quota left.
+async function resolveDirectEndpoint(env) {
+  const fresh = await freshDirectEndpoint(env);
+  if (fresh) return fresh;
+  if (!env.DIRECT_MODEL_KEY) return null;
+  const row = await env.DB.prepare(
+    "SELECT message FROM events WHERE kind = 'direct-endpoint' ORDER BY ts DESC LIMIT 1",
+  ).first();
+  if (!row) return null;
+  const url = row.message.replace(/\/+$/, '');
+  try {
+    const res = await fetch(url + '/v1/models', {
+      headers: { authorization: `Bearer ${env.DIRECT_MODEL_KEY}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    return res.ok ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+async function modelTest(request, env) {
+  // A key or a dashboard session: this call spends GPU, so it is never anonymous.
+  const keyed = await apiKeyRow(env, request);
+  if (!keyed.row) {
+    const { op, response } = await requireOperator(env, request);
+    if (!op) return response;
+  }
+  const base = await resolveDirectEndpoint(env);
+  if (!base) {
+    return json({ ok: false, engine: 'none', error: 'No GPU kernel is reporting. Start the direct kernel on Kaggle.' });
+  }
+  const started = now();
+  try {
+    const res = await fetch(base + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${env.DIRECT_MODEL_KEY}` },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'Reply with the single word READY.' }],
+        max_tokens: 160,
+        temperature: 0,
+      }),
+    });
+    const text = await res.text();
+    const ms = now() - started;
+    if (!res.ok) {
+      return json({ ok: false, engine: 'direct', host: new URL(base).host, status: res.status, error: text.slice(0, 300), ms });
+    }
+    const data = JSON.parse(text);
+    const message = data.choices?.[0]?.message || {};
+    return json({
+      ok: true,
+      engine: 'direct',
+      host: new URL(base).host,
+      ms,
+      model: data.model,
+      reply: (message.content || message.reasoning_content || '').trim().slice(0, 120),
+    });
+  } catch (err) {
+    return json({ ok: false, engine: 'direct', error: String((err && err.message) || err).slice(0, 300), ms: now() - started });
+  }
+}
+
+async function logInference(env, engine, status, ms, extra = {}) {
+  try {
+    await env.DB.prepare('INSERT INTO events (ts, kind, message, detail) VALUES (?, ?, ?, ?)')
+      .bind(now(), 'inference', `${engine}:${status}`, JSON.stringify({ ms, ...extra }))
+      .run();
+  } catch { /* logging must never break inference */ }
+}
+
 async function proxyDirect(env, upstreamPath, bodyText, contentType) {
-  const base = await freshDirectEndpoint(env);
+  const base = await resolveDirectEndpoint(env);
   if (!base) return null;
+  const started = now();
   const upstream = await fetch(base + upstreamPath, {
     method: bodyText === undefined ? 'GET' : 'POST',
     headers: {
@@ -376,6 +452,7 @@ async function proxyDirect(env, upstreamPath, bodyText, contentType) {
   headers.set('content-type', upstream.headers.get('content-type') || 'application/json');
   headers.set('cache-control', 'no-store');
   headers.set('x-vexa-direct', new URL(base).host);
+  await logInference(env, 'direct', upstream.status, now() - started, { path: upstreamPath, host: new URL(base).host });
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
@@ -421,6 +498,7 @@ async function openaiRoute(request, env, path) {
   // sustain. When a direct kernel is reporting, answer from it and leave the relay idle.
   const direct = await proxyDirect(env, path, JSON.stringify(payload), 'application/json');
   if (direct) return direct;
+  await logInference(env, 'relay', 'routed', 0, { path });
   let state = await gpu(env, '/state', {}, 'GET');
   try {
     if (!state || state.status === 'off' || state.status === 'error') {
