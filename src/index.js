@@ -226,11 +226,15 @@ async function runtimeRoute(request, env, path) {
 }
 
 const DONE = "[" + "DONE" + "]";
-const WARM_TIMEOUT_MS = 12 * 60 * 1000;
+const WARM_TIMEOUT_MS = 16 * 60 * 1000;
 const JOB_TIMEOUT_MS = 15 * 60 * 1000;
 
 function sse(payload) {
   return `data: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n\n`;
+}
+
+function litellmModelId(served) {
+  return /^[a-z0-9_-]+\//i.test(served) ? served : `openai/${served}`;
 }
 
 function apiError(message, type = 'invalid_request_error', code = null) {
@@ -254,9 +258,12 @@ async function openaiRoute(request, env, path) {
   if (!row) return error('Invalid API key', 401);
   const cfg = await config(env);
   if (path === '/v1/models') {
+    // LiteLLM (and therefore OpenHands) refuses a model id without a provider prefix,
+    // so advertise the prefixed id first and keep the bare one for plain OpenAI clients.
+    const created = Math.floor(now() / 1000);
     return json({
       object: 'list',
-      data: [{ id: cfg.servedModel, object: 'model', created: Math.floor(now() / 1000), owned_by: 'vexa' }],
+      data: [litellmModelId(cfg.servedModel), cfg.servedModel].map((id) => ({ id, object: 'model', created, owned_by: 'vexa' })),
     });
   }
   if (request.method !== 'POST') return error('Method not allowed', 405);
@@ -264,6 +271,7 @@ async function openaiRoute(request, env, path) {
   if (!Array.isArray(body.messages) || body.messages.length === 0) return error('messages[] is required');
   if (JSON.stringify(body.messages).length > 400000) return error('Prompt is too large', 413);
   const stream = !!body.stream;
+  // One model per deployment: "x", "openai/x" and any alias all resolve to it.
   const payload = { ...body, model: cfg.servedModel };
   if (payload.max_tokens == null && payload.max_completion_tokens == null) payload.max_tokens = 2048;
   delete payload.max_completion_tokens;

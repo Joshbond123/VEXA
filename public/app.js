@@ -311,24 +311,26 @@ function copyButton(text, label = 'Copy') {
 
 function connectCard() {
   const base = `${location.origin}/v1`;
-  const model = (state.settings && state.settings.model_served_id) || 'qwen3.8-27b-uncensored-q6_k';
+  const served = (state.settings && state.settings.model_served_id) || 'qwen3.8-27b-uncensored-q6_k';
+  // LiteLLM (and so OpenHands) rejects a bare model id: it needs the openai/ provider prefix.
+  const model = /^[a-z0-9_-]+\//i.test(served) ? served : `openai/${served}`;
   const secret = state.lastKey && state.lastKey.key;
   const shown = secret || 'vx-… (create a key above, it is shown once)';
   const env = [
-    `LLM_MODEL=openai/${model}`,
+    `LLM_MODEL=${model}`,
     `LLM_BASE_URL=${base}`,
     `LLM_API_KEY=${secret || 'vx-YOUR_KEY'}`,
   ].join('\n');
   const toml = [
     '[llm]',
-    `model = "openai/${model}"`,
+    `model = "${model}"`,
     `base_url = "${base}"`,
     `api_key = "${secret || 'vx-YOUR_KEY'}"`,
   ].join('\n');
   const sdk = [
     'from openhands.sdk import LLM',
     'llm = LLM(',
-    `    model="openai/${model}",`,
+    `    model="${model}",`,
     `    base_url="${base}",`,
     `    api_key="${secret || 'vx-YOUR_KEY'}",`,
     ')',
@@ -341,6 +343,7 @@ function connectCard() {
     el('dl', { class: 'kv' },
       el('dt', { text: 'Base URL' }), el('dd', {}, el('span', { class: 'mono', text: base }), copyButton(base)),
       el('dt', { text: 'Model' }), el('dd', {}, el('span', { class: 'mono', text: model }), copyButton(model)),
+      el('dt', { text: '' }), el('dd', {}, el('span', { class: 'hint', text: 'Paste this exact string into the OpenHands / LiteLLM model field — the openai/ prefix is required. Plain OpenAI SDKs may use the id without it.' })),
       el('dt', { text: 'API key' }), el('dd', {},
         el('span', { class: 'mono', text: shown }),
         secret ? copyButton(secret) : null)),

@@ -37,6 +37,7 @@ export class GpuHub {
     this.jobs = new Map();
     this.waiters = new Map();
     this.s = null;
+    this.epoch = null;
   }
 
   async load() {
@@ -44,6 +45,7 @@ export class GpuHub {
     const stored = await this.storage.get('state');
     if (stored) {
       this.s = stored;
+      await this.adoptEpoch();
       return this.s;
     }
     // A new instance (new deploy) starts empty: rebuild from D1 so a live GPU
@@ -51,6 +53,12 @@ export class GpuHub {
     try {
       const row = await this.env.DB.prepare('SELECT state_json FROM gpu_state WHERE id = 1').first();
       if (row && row.state_json) this.s = { ...blankState(), ...JSON.parse(row.state_json) };
+      // Claim a new epoch: any instance still running the previous bundle must stop
+      // acting, otherwise its alarms can cancel a healthy Kaggle session after a deploy.
+      const claimed = await this.env.DB.prepare(
+        'UPDATE gpu_state SET epoch = COALESCE(epoch, 0) + 1 WHERE id = 1 RETURNING epoch',
+      ).first();
+      this.epoch = claimed ? Number(claimed.epoch) : 1;
     } catch {}
     if (!this.s) this.s = blankState();
     await this.storage.put('state', this.s);
@@ -82,6 +90,23 @@ export class GpuHub {
         JSON.stringify(s.gpus || []), JSON.stringify(s.model || null), s.error, s.stopReason, s.updatedAt,
         JSON.stringify(s)).run();
     } catch {}
+  }
+
+  async adoptEpoch() {
+    try {
+      const row = await this.env.DB.prepare('SELECT epoch FROM gpu_state WHERE id = 1').first();
+      this.epoch = row ? Number(row.epoch) : null;
+    } catch {}
+  }
+
+  async stillOwner() {
+    if (this.epoch == null) return true;
+    try {
+      const row = await this.env.DB.prepare('SELECT epoch FROM gpu_state WHERE id = 1').first();
+      return !row || Number(row.epoch) === this.epoch;
+    } catch {
+      return true;
+    }
   }
 
   json(data, status = 200) {
@@ -495,6 +520,10 @@ export class GpuHub {
   }
 
   async failSession(message) {
+    if (!(await this.stillOwner())) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     const s = this.s;
     s.status = 'error'; s.phase = 'error'; s.error = message; s.detail = 'GPU session failed'; s.activeJobs = 0;
     await this.save();
@@ -507,6 +536,10 @@ export class GpuHub {
   }
 
   async finalizeOff(reason) {
+    if (!(await this.stillOwner())) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     const s = this.s;
     s.status = 'off'; s.phase = 'off'; s.detail = 'GPU is off';
     s.activeJobs = 0; s.stopRequested = false; s.stopAt = null; s.runtimeHash = null; s.progress = 0;
@@ -536,6 +569,10 @@ export class GpuHub {
 
   async alarm() {
     await this.load();
+    if (!(await this.stillOwner())) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     const s = this.s;
     const t = now();
     if (s.status === 'off' || s.status === 'error') return;
