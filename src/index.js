@@ -117,6 +117,7 @@ export default {
       const path = url.pathname;
       if (path === '/api/direct' || path === '/api/direct/announce') return await directRoute(request, env);
       if (path.startsWith('/api/runtime/')) return await runtimeRoute(request, env, path);
+      if (path.startsWith('/direct/v1/')) return await directProxy(request, env, path);
       if (path === '/v1/models' || path === '/v1/chat/completions') return await openaiRoute(request, env, path);
       if (path.startsWith('/api/')) return await apiRoute(request, env, path, url);
       return await env.ASSETS.fetch(request);
@@ -341,6 +342,38 @@ async function waitForGpu(env, state, deadline) {
     current = await gpu(env, '/waitready', { timeout: 20000 });
   }
   return current;
+}
+
+// The permanent front door: the tunnel URL changes on every kernel start, this does
+// not. Requests are proxied straight to the announced tunnel, so no Durable Object is
+// involved and the model key never leaves the Worker.
+const DIRECT_STALE_MS = 30 * 60 * 1000;
+
+async function directProxy(request, env, path) {
+  const { row } = await apiKeyRow(env, request);
+  if (!row) return error('Invalid API key', 401);
+  const key = env.DIRECT_MODEL_KEY;
+  if (!key) return error('Direct proxying is not configured', 503);
+  const endpoint = await env.DB.prepare(
+    "SELECT message, ts FROM events WHERE kind = 'direct-endpoint' ORDER BY ts DESC LIMIT 1",
+  ).first();
+  if (!endpoint || now() - endpoint.ts > DIRECT_STALE_MS) {
+    return error('No direct kernel is reporting right now', 503);
+  }
+  const target = endpoint.message.replace(/\/+$/, '') + path.replace(/^\/direct/, '');
+  const upstream = await fetch(target, {
+    method: request.method,
+    headers: {
+      'content-type': request.headers.get('content-type') || 'application/json',
+      authorization: `Bearer ${key}`,
+    },
+    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
+  });
+  const headers = new Headers();
+  headers.set('content-type', upstream.headers.get('content-type') || 'application/json');
+  headers.set('cache-control', 'no-store');
+  headers.set('x-vexa-direct', new URL(target).host);
+  return new Response(upstream.body, { status: upstream.status, headers });
 }
 
 async function openaiRoute(request, env, path) {

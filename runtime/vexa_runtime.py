@@ -20,6 +20,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import zipfile
 
 try:
     CONFIG  # injected by the Worker
@@ -768,7 +769,46 @@ def watchdog():
 
 
 CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+NGROK_ZIP_URL = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip"
+# Connector output also mentions documentation links; only these hosts are endpoints.
+TUNNEL_HOSTS = ("trycloudflare.com", "ngrok-free.app", "ngrok-free.dev", "ngrok.app", "ngrok.io",
+                "inrok.in", "loca.lt", "localtunnel.me", "serveo.net", "pinggy.link", "pinggy.io", "bore.pub")
+URL_RE = re.compile(r"https://[A-Za-z0-9][A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 tunnel_proc = None
+
+
+def tunnel_url(text, allow_any=False):
+    """Pick the endpoint out of connector output, never a docs link."""
+    for match in URL_RE.finditer(text):
+        url = match.group(0)
+        if url.split("//", 1)[1].lower().endswith(TUNNEL_HOSTS):
+            return url
+    if allow_any:
+        match = URL_RE.search(text)
+        return match.group(0) if match else None
+    return None
+
+
+def ensure_ngrok():
+    """ngrok is not in the Kaggle image; fetch the official static build."""
+    found = shutil.which("ngrok")
+    if found:
+        return found
+    local = "/tmp/vexa-ngrok"
+    if os.path.exists(local) and os.access(local, os.X_OK):
+        return local
+    log("downloading ngrok for the endpoint")
+    try:
+        archive = "/tmp/vexa-ngrok.zip"
+        urllib.request.urlretrieve(NGROK_ZIP_URL, archive)
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall("/tmp/vexa-ngrok-bin")
+        shutil.copy2("/tmp/vexa-ngrok-bin/ngrok", local)
+        os.chmod(local, 0o755)
+        return local
+    except Exception as err:
+        log(f"ngrok download failed: {err}", "error")
+        return None
 
 
 def ensure_cloudflared():
@@ -797,31 +837,39 @@ def start_tunnel(port, command=None, timeout=120):
     themselves. `{port}` in the command is replaced with the llama-server port.
     """
     global tunnel_proc
+    token = str(CONFIG.get("ngrokAuthtoken") or os.environ.get("NGROK_AUTHTOKEN") or "").strip()
+    allow_any = False
     if command:
-        tunnel_proc = subprocess.Popen(
-            ["/bin/sh", "-c", command.replace("{port}", str(port))],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
-        )
+        cmd = ["/bin/sh", "-c", command.replace("{port}", str(port))]
+        allow_any = True
+    elif token:
+        exe = ensure_ngrok()
+        if not exe:
+            return None
+        cmd = [exe, "http", str(port), "--authtoken", token, "--log", "stdout", "--log-format", "logfmt"]
+        domain = str(CONFIG.get("ngrokDomain") or os.environ.get("NGROK_DOMAIN") or "").strip()
+        if domain:
+            cmd.append(f"--url=https://{domain}")
     else:
         exe = ensure_cloudflared()
         if not exe:
             return None
-        tunnel_proc = subprocess.Popen(
-            [exe, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate", "--loglevel", "info"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
-        )
+        cmd = [exe, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate", "--loglevel", "info"]
+    tunnel_proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
+    )
     found = threading.Event()
     holder = {}
 
     def watch():
         for line in tunnel_proc.stdout:
             text = line.rstrip()
-            match = re.search(r"https://[a-z0-9][a-z0-9.-]+\.[a-z]{2,}", text)
-            if match and not found.is_set():
-                holder["url"] = match.group(0)
+            url = tunnel_url(text, allow_any)
+            if url and not found.is_set():
+                holder["url"] = url
                 found.set()
-            elif re.search(r"\bERR\b", text):
-                log("cloudflared: " + text[:200], "warn")
+            elif re.search(r"level=error|\bERR\b", text):
+                log("tunnel: " + text[:200], "warn")
 
     threading.Thread(target=watch, daemon=True).start()
     found.wait(timeout)

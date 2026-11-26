@@ -23,6 +23,8 @@ export function buildKernel(cfg) {
     announceKey: cfg.announceKey || '',
     tunnelCommand: cfg.tunnelCommand || '',
     publicUrl: cfg.publicUrl || '',
+    ngrokAuthtoken: cfg.ngrokAuthtoken || '',
+    ngrokDomain: cfg.ngrokDomain || '',
   };
   // JSON is not valid Python: emit a JSON string literal and decode it in the kernel.
   const literal = JSON.stringify(JSON.stringify(config));
