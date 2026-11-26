@@ -28,6 +28,10 @@ except NameError:
 
 WORKER = str(CONFIG.get("workerUrl", "")).rstrip("/")
 RUNTIME_KEY = CONFIG.get("runtimeKey", "")
+# Direct mode serves inference straight from this kernel over its own tunnel. The
+# control-plane relay costs a Durable Object request per flush, which is what a free
+# Cloudflare plan cannot sustain, so this path removes it entirely.
+DIRECT = bool(CONFIG.get("direct"))
 PORT = 8080
 LLAMA_DIR = "/tmp/vexa-llama"
 
@@ -95,6 +99,8 @@ def log(message, level="info"):
 
 
 def phase(name, detail="", progress=None, extra=None):
+    if not runtime_token:
+        return
     payload = {"phase": name, "detail": detail}
     if progress is not None:
         payload["progress"] = float(progress)
@@ -372,6 +378,9 @@ def start_server(server_path, model_path, skip=0):
         "--metrics",
         "--alias", str(CONFIG.get("servedModel") or "vexa"),
     ]
+    # A tunnel is world-reachable, so the server itself must demand a key.
+    if CONFIG.get("_apiKey"):
+        base += ["--api-key", str(CONFIG["_apiKey"])]
     variants = server_variants(base, int(CONFIG.get("ctx") or 32768))
     for index in range(max(0, int(skip)), len(variants)):
         label, args = variants[index]
@@ -428,10 +437,13 @@ def server_models():
 
 
 def _completion(payload):
+    headers = {"content-type": "application/json"}
+    if CONFIG.get("_apiKey"):
+        headers["authorization"] = f"Bearer {CONFIG['_apiKey']}"
     req = urllib.request.Request(
         f"http://127.0.0.1:{PORT}/v1/chat/completions",
         data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=300) as resp:
         return json.loads(resp.read().decode())
@@ -733,6 +745,8 @@ def shutdown(reason):
             server_proc.wait(20)
         except Exception:
             server_proc.kill()
+    if not runtime_token:
+        return
     try:
         api("/api/runtime/stopped", {"reason": reason}, retries=2)
     except Exception as err:
@@ -743,39 +757,68 @@ def watchdog():
     while not stop_event.is_set():
         if server_proc and server_proc.poll() is not None:
             log(f"llama-server exited unexpectedly (code {server_proc.returncode})", "error")
-            try:
-                api("/api/runtime/error", {"error": "llama-server exited unexpectedly"}, retries=1)
-            except Exception:
-                pass
+            if runtime_token:
+                try:
+                    api("/api/runtime/error", {"error": "llama-server exited unexpectedly"}, retries=1)
+                except Exception:
+                    pass
             stop_event.set()
             return
         stop_event.wait(5)
 
 
-def main():
-    global runtime_token
-    if not WORKER or not RUNTIME_KEY:
-        raise RuntimeError("CONFIG.workerUrl and CONFIG.runtimeKey are required")
-    log("VEXA runtime booting")
-    reg = _http(WORKER + "/api/runtime/register", {
-        "kernelRef": CONFIG.get("kernelSlug"),
-        "kernelVersion": CONFIG.get("kernelVersion"),
-        "nonce": CONFIG.get("sessionNonce"),
-        "gpus": gpu_stats(),
-        "host": socket.gethostname(),
-    }, {"x-runtime-key": RUNTIME_KEY}, 30)
-    runtime_token = reg.get("runtimeToken")
-    if not runtime_token:
-        raise RuntimeError("registration did not return a runtime token")
-    if reg.get("stop"):
-        log("control plane rejected this session (stop)", "warn")
-        return
-    for key in ("ctx", "parallel", "servedModel", "modelBytes", "modelSha256",
-                "verifyFull", "dataset", "modelFile"):
-        if reg.get(key) is not None:
-            CONFIG[key] = reg[key]
-    threading.Thread(target=log_sender, daemon=True).start()
-    threading.Thread(target=heartbeat_loop, daemon=True).start()
+CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+tunnel_proc = None
+
+
+def ensure_cloudflared():
+    """Find or download the tunnel client (Kaggle images do not ship one)."""
+    local = os.environ.get("CLOUDFLARED_BIN") or "/tmp/vexa-cloudflared"
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+    if os.path.exists(local) and os.access(local, os.X_OK):
+        return local
+    log("downloading cloudflared for the direct endpoint")
+    try:
+        urllib.request.urlretrieve(CLOUDFLARED_URL, local)
+        os.chmod(local, 0o755)
+        return local
+    except Exception as err:
+        log(f"cloudflared download failed: {err}", "error")
+        return None
+
+
+def start_tunnel(port, timeout=120):
+    """Open a public HTTPS tunnel to llama-server and return its URL."""
+    global tunnel_proc
+    exe = ensure_cloudflared()
+    if not exe:
+        return None
+    tunnel_proc = subprocess.Popen(
+        [exe, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate", "--loglevel", "info"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, text=True,
+    )
+    found = threading.Event()
+    holder = {}
+
+    def watch():
+        for line in tunnel_proc.stdout:
+            text = line.rstrip()
+            match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", text)
+            if match and not found.is_set():
+                holder["url"] = match.group(0)
+                found.set()
+            elif re.search(r"\bERR\b", text):
+                log("cloudflared: " + text[:200], "warn")
+
+    threading.Thread(target=watch, daemon=True).start()
+    found.wait(timeout)
+    return holder.get("url")
+
+
+def boot_model():
+    """Locate the model and bring llama-server up. Returns (model_info, proof)."""
     set_phase("allocated", "GPU session allocated; locating the persistent model")
     model_path = find_input_file(CONFIG["modelFile"])
     if not model_path:
@@ -803,6 +846,10 @@ def main():
     proof = selftest()
     log(f"self-test ok in {proof['ttftMs']}ms ({proof['tokPerSec']} tok/s): {proof['content']!r}")
     ready_event.set()
+    return model_info, proof
+
+
+def report_ready(model_info, proof):
     gpus = gpu_stats()
     vram = sum((g.get("usedMiB") or 0) for g in gpus)
     set_phase("ready", "model loaded and verified; API is live", 1.0, {
@@ -820,6 +867,67 @@ def main():
         "metrics": proof,
         "gpus": gpus,
     })
+
+
+def direct_main():
+    """Serve inference from this kernel over its own public tunnel.
+
+    Nothing here touches the Worker, so the Durable Object quota cannot limit it.
+    The tunnel is world-reachable, hence the mandatory bearer key on llama-server.
+    """
+    key = str(CONFIG.get("directApiKey") or os.environ.get("VEXA_DIRECT_KEY") or "").strip()
+    if not key:
+        key = "vx-" + hashlib.sha256(os.urandom(32)).hexdigest()[:32]
+    CONFIG["_apiKey"] = key
+    log("VEXA direct mode: serving from this notebook; the relay is not in the path")
+    model_info, proof = boot_model()
+    threading.Thread(target=watchdog, daemon=True).start()
+    url = start_tunnel(PORT)
+    if not url:
+        raise RuntimeError("could not open a public tunnel for the direct endpoint")
+    base = url.rstrip("/") + "/v1"
+    rule = "=" * 64
+    log(rule)
+    log("VEXA DIRECT ENDPOINT - copy these into your OpenAI / OpenHands profile")
+    log(f"  base URL : {base}")
+    log(f"  API key  : {key}")
+    log(f"  model    : {CONFIG.get('servedModel')}")
+    log(f"  check    : curl -s {base}/models -H 'authorization: Bearer {key}'")
+    log("  this URL changes every time the notebook starts")
+    log(rule)
+    while not stop_event.is_set():
+        stop_event.wait(1)
+    shutdown("notebook stopped")
+
+
+def main():
+    global runtime_token
+    if DIRECT:
+        return direct_main()
+    if not WORKER or not RUNTIME_KEY:
+        raise RuntimeError("CONFIG.workerUrl and CONFIG.runtimeKey are required")
+    log("VEXA runtime booting")
+    reg = _http(WORKER + "/api/runtime/register", {
+        "kernelRef": CONFIG.get("kernelSlug"),
+        "kernelVersion": CONFIG.get("kernelVersion"),
+        "nonce": CONFIG.get("sessionNonce"),
+        "gpus": gpu_stats(),
+        "host": socket.gethostname(),
+    }, {"x-runtime-key": RUNTIME_KEY}, 30)
+    runtime_token = reg.get("runtimeToken")
+    if not runtime_token:
+        raise RuntimeError("registration did not return a runtime token")
+    if reg.get("stop"):
+        log("control plane rejected this session (stop)", "warn")
+        return
+    for key in ("ctx", "parallel", "servedModel", "modelBytes", "modelSha256",
+                "verifyFull", "dataset", "modelFile"):
+        if reg.get(key) is not None:
+            CONFIG[key] = reg[key]
+    threading.Thread(target=log_sender, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
+    model_info, proof = boot_model()
+    report_ready(model_info, proof)
     threading.Thread(target=watchdog, daemon=True).start()
     for slot in range(int(CONFIG.get("parallel") or 2)):
         threading.Thread(target=poll_loop, args=(slot,), daemon=True).start()
