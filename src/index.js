@@ -269,11 +269,18 @@ async function openaiRoute(request, env, path) {
   if (request.method !== 'POST') return error('Method not allowed', 405);
   const body = await readJson(request);
   if (!Array.isArray(body.messages) || body.messages.length === 0) return error('messages[] is required');
-  if (JSON.stringify(body.messages).length > 400000) return error('Prompt is too large', 413);
+  // Reject oversized prompts up front: prefill is expensive, and each GPU slot only
+  // holds ctx/parallel tokens. ~3 chars per token is a safe floor for code-heavy prompts.
+  const slotChars = Math.floor((Number(cfg.ctx) || 32768) / (Number(cfg.parallel) || 2)) * 3;
+  const maxChars = Math.min(520000, slotChars);
+  const promptChars = JSON.stringify(body.messages).length;
+  if (promptChars > maxChars) {
+    return error(`Prompt is too large: ${promptChars} chars, limit ${maxChars} for the current context window`, 413);
+  }
   const stream = !!body.stream;
   // One model per deployment: "x", "openai/x" and any alias all resolve to it.
   const payload = { ...body, model: cfg.servedModel };
-  if (payload.max_tokens == null && payload.max_completion_tokens == null) payload.max_tokens = 2048;
+  if (payload.max_tokens == null && payload.max_completion_tokens == null) payload.max_tokens = 4096;
   delete payload.max_completion_tokens;
   let state = await gpu(env, '/state', {}, 'GET');
   try {
@@ -336,7 +343,11 @@ async function openaiRoute(request, env, path) {
     if (res.missing) return error("Job was lost", 500);
     cursor = res.cursor ?? cursor;
     if (res.done) {
-      if (res.error) return error(res.error, 502);
+      if (res.error) {
+        // A prompt larger than the slot window is a client error, not a gateway fault.
+        const overflow = /exceeds the available context|context size/i.test(String(res.error));
+        return error(res.error, overflow ? 400 : 502);
+      }
       if (!res.result) return error("GPU returned an empty response", 502);
       return json(res.result);
     }

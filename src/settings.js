@@ -9,7 +9,7 @@ const SCHEMA = {
   model_file: { env: 'MODEL_FILE', default: '', label: 'Model file' },
   model_bytes: { env: 'MODEL_BYTES', default: '0', type: 'number', label: 'Model size (bytes)' },
   model_sha256: { env: 'MODEL_SHA256', default: '', label: 'Model SHA-256' },
-  ctx_size: { env: 'CTX_SIZE', default: '32768', type: 'number', label: 'Context size' },
+  ctx_size: { env: 'CTX_SIZE', default: '32768', type: 'number', label: 'Context window (tokens, across all slots)' },
   parallel_slots: { env: 'PARALLEL_SLOTS', default: '2', type: 'number', label: 'Parallel slots' },
   idle_timeout_minutes: { env: 'IDLE_TIMEOUT_MINUTES', default: '20', type: 'number', label: 'Idle shutdown (minutes)' },
   auto_start: { default: 'true', type: 'bool', label: 'Auto-start GPU on request' },

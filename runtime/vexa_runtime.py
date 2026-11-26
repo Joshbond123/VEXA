@@ -310,7 +310,33 @@ def ensure_cublas(dirs):
     return dirs
 
 
-def start_server(server_path, model_path):
+def server_variants(base, ctx_total):
+    """Launch configurations, best first; every one keeps thinking out of content.
+
+    GPU1 runs out of VRAM before GPU0 because the output layer lands there, so the
+    speculative-decoding variants hand GPU1 a smaller share of the model.
+    """
+    wide = max(32768, int(ctx_total))
+    safe = min(wide, 65536)
+    q8 = ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+    auto = ["--reasoning-format", "auto"]
+    spec = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
+    batch = ["-b", "4096", "-ub", "1024"]
+    fa = ["-fa", "on"]
+
+    def cfg(ctx, split, *extra):
+        return base + ["-c", str(ctx), "--tensor-split", split] + fa + q8 + auto + list(extra) + batch
+
+    return [
+        (f"spec@{wide}", cfg(wide, "1,0.8", *spec)),
+        (f"spec@{int(wide * 0.75)}", cfg(int(wide * 0.75), "1,0.9", *spec)),
+        (f"nofspec@{wide}", cfg(wide, "1,1")),
+        (f"nofspec@{safe}", cfg(safe, "1,1")),
+        (f"plain@{safe}", base + ["-c", str(safe), "--tensor-split", "1,1"] + auto + batch),
+    ]
+
+
+def start_server(server_path, model_path, skip=0):
     global server_proc
     env = dict(os.environ)
     cuda_dirs = [LLAMA_DIR, "/usr/local/cuda/lib64", "/usr/local/cuda-12/lib64", "/usr/local/cuda-12.2/lib64", "/usr/local/cuda-12.4/lib64"]
@@ -334,23 +360,20 @@ def start_server(server_path, model_path):
         "--port", str(PORT),
         "-ngl", "99",
         "--split-mode", "layer",
-        "--tensor-split", "1,1",
         "--main-gpu", "0",
-        "-c", str(int(CONFIG.get("ctx") or 32768)),
         "-np", str(int(CONFIG.get("parallel") or 2)),
         "-t", "4",
+        "--threads-batch", "4",
         "--jinja",
         "--no-warmup",
         "--no-webui",
         "--metrics",
         "--alias", str(CONFIG.get("servedModel") or "vexa"),
     ]
-    # Fold reasoning into message.content: most OpenAI clients ignore reasoning_content.
-    reasoning = ["--reasoning-format", "none"]
-    spec = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
-    variants = [base + reasoning + spec, base + reasoning, base + spec, base]
-    for index, args in enumerate(variants):
-        log("starting llama-server: " + " ".join(args[1:]))
+    variants = server_variants(base, int(CONFIG.get("ctx") or 32768))
+    for index in range(max(0, int(skip)), len(variants)):
+        label, args = variants[index]
+        log(f"starting llama-server [{label}]: " + " ".join(args[1:]))
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, bufsize=0)
         server_proc = proc
         threading.Thread(target=read_server_output, args=(proc,), daemon=True).start()
@@ -362,8 +385,8 @@ def start_server(server_path, model_path):
                 break
             time.sleep(0.5)
         if proc.poll() is None:
-            return proc
-        log(f"llama-server exited during startup (code {proc.returncode}); retrying variant {index + 2}/{len(variants)}", "warn")
+            return proc, index
+        log(f"llama-server variant {label} exited during startup (code {proc.returncode})", "warn")
         server_state["error"] = None
         time.sleep(1)
     raise RuntimeError("llama-server failed to start with every supported flag set")
@@ -461,6 +484,104 @@ def selftest():
     raise RuntimeError("self-test returned an empty completion: " + json.dumps(last)[:400])
 
 
+THINK_OPEN = "<" + "think>"
+THINK_CLOSE = "</" + "think>"
+
+
+def split_reasoning(text):
+    """Separate a leading think block from the answer. Returns (reasoning, content)."""
+    if not text:
+        return "", ""
+    body = text.lstrip()
+    if body.startswith(THINK_OPEN):
+        body = body[len(THINK_OPEN):]
+    if THINK_CLOSE in body:
+        reasoning, _, content = body.partition(THINK_CLOSE)
+        return reasoning.strip(), content.lstrip("\n")
+    return "", text
+
+
+def sanitize_message(message):
+    """Move thinking the server left inside message.content into reasoning_content."""
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if not isinstance(content, str) or (THINK_OPEN not in content and THINK_CLOSE not in content):
+        return
+    reasoning, clean = split_reasoning(content)
+    message["content"] = clean
+    if reasoning:
+        message["reasoning_content"] = (message.get("reasoning_content") or "") + reasoning
+
+
+class StreamSanitizer:
+    """Per-job splitter so streamed deltas never expose thinking as content."""
+
+    HOLD = len(THINK_CLOSE) - 1
+
+    def __init__(self):
+        self.mode = "lead"
+        self.buf = ""
+        self.started = False
+
+    def feed(self, delta):
+        if not isinstance(delta, dict):
+            return delta
+        text = delta.get("content")
+        if not isinstance(text, str) or not text:
+            return delta
+        out = {k: v for k, v in delta.items() if k != "content"}
+        self.buf += text
+        reasoning, content = "", ""
+        while True:
+            if self.mode == "lead":
+                head = self.buf.lstrip()
+                if not head:
+                    break
+                if head.startswith(THINK_OPEN):
+                    self.buf = self.buf[len(self.buf) - len(head) + len(THINK_OPEN):]
+                    self.mode = "think"
+                    continue
+                if THINK_OPEN.startswith(head):
+                    break
+                if THINK_CLOSE in self.buf:
+                    self.mode = "think"
+                    continue
+                self.mode = "content"
+                continue
+            if self.mode == "think":
+                if THINK_CLOSE in self.buf:
+                    before, _, self.buf = self.buf.partition(THINK_CLOSE)
+                    reasoning += before
+                    self.mode = "content"
+                    continue
+                keep = min(len(self.buf), self.HOLD)
+                reasoning += self.buf[:len(self.buf) - keep]
+                self.buf = self.buf[len(self.buf) - keep:]
+                break
+            if not self.started:
+                self.buf = self.buf.lstrip("\n")
+                if not self.buf:
+                    break
+                self.started = True
+            content += self.buf
+            self.buf = ""
+            break
+        if reasoning:
+            out["reasoning_content"] = (delta.get("reasoning_content") or "") + reasoning
+        if content:
+            out["content"] = content
+        return out
+
+    def flush(self):
+        text, self.buf = self.buf, ""
+        if not text:
+            return {}
+        if self.mode == "think":
+            return {"reasoning_content": text}
+        return {"content": text.lstrip("\n")}
+
+
 def flush(job_id, chunks, seq):
     if not chunks:
         return False, seq
@@ -477,22 +598,43 @@ def stream_job(job_id, body):
         raise RuntimeError(f"llama-server HTTP {resp.status}: {resp.read().decode('utf-8', 'replace')[:800]}")
     chunks, seq, last = [], 0, time.time()
     usage, cancelled = None, False
+    sanitizer = StreamSanitizer()
+
+    def queue(payload):
+        nonlocal seq, cancelled, last
+        chunks.append(payload)
+        if len(chunks) >= 8 or time.time() - last >= 0.04:
+            cancelled, seq = flush(job_id, chunks, seq)
+            del chunks[:]
+            last = time.time()
+
     for raw in resp:
         line = raw.decode("utf-8", "replace").strip()
         if not line.startswith("data:"):
             continue
         data = line[5:].strip()
-        chunks.append(data)
-        if '"usage"' in data:
+        if data:
             try:
-                usage = json.loads(data).get("usage") or usage
+                obj = json.loads(data)
             except Exception:
-                pass
-        if len(chunks) >= 8 or time.time() - last >= 0.04:
-            cancelled, seq = flush(job_id, chunks, seq)
-            chunks, last = [], time.time()
-            if cancelled:
-                break
+                obj = None
+            if isinstance(obj, dict):
+                for choice in obj.get("choices") or []:
+                    if isinstance(choice, dict) and isinstance(choice.get("delta"), dict):
+                        choice["delta"] = sanitizer.feed(choice["delta"])
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                data = json.dumps(obj, separators=(",", ":"))
+        queue(data)
+        if cancelled:
+            break
+    tail = sanitizer.flush()
+    if tail and not cancelled:
+        queue(json.dumps({
+            "id": f"chatcmpl-{job_id}", "object": "chat.completion.chunk",
+            "created": int(time.time()), "model": body.get("model"),
+            "choices": [{"index": 0, "delta": tail, "finish_reason": None}],
+        }, separators=(",", ":")))
     if chunks and not cancelled:
         flush(job_id, chunks, seq)
     conn.close()
@@ -507,6 +649,9 @@ def blocking_job(job_id, body):
     )
     with urllib.request.urlopen(req, timeout=1800) as resp:
         result = json.loads(resp.read().decode())
+    for choice in result.get("choices") or []:
+        if isinstance(choice, dict):
+            sanitize_message(choice.get("message"))
     api(f"/api/runtime/jobs/{job_id}/done", {
         "result": result,
         "usage": result.get("usage"),
@@ -634,9 +779,21 @@ def main():
     model_info = verify_model(model_path)
     server_path = prepare_llama(os.path.dirname(model_path))
     set_phase("loading", "starting llama.cpp with CUDA layer split across both T4s", 0.05)
-    proc = start_server(server_path, model_path)
-    threading.Thread(target=monitor_loading, args=(proc, model_info["bytes"]), daemon=True).start()
-    wait_health(int(CONFIG.get("loadTimeoutSeconds") or 1200))
+    variant, proc = 0, None
+    while True:
+        proc, variant = start_server(server_path, model_path, variant)
+        threading.Thread(target=monitor_loading, args=(proc, model_info["bytes"]), daemon=True).start()
+        try:
+            wait_health(int(CONFIG.get("loadTimeoutSeconds") or 1200))
+            break
+        except Exception as err:
+            log(f"launch variant {variant} never became healthy ({err}); trying the next one", "warn")
+            try:
+                proc.terminate()
+                proc.wait(timeout=20)
+            except Exception:
+                pass
+            variant += 1
     set_phase("loading", "llama-server healthy; proving the model answers", 0.97)
     proof = selftest()
     log(f"self-test ok in {proof['ttftMs']}ms ({proof['tokPerSec']} tok/s): {proof['content']!r}")
