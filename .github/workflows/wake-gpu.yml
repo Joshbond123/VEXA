@@ -1,0 +1,67 @@
+name: Wake VEXA GPU
+
+# The Kaggle session dies (12 h cap, host restart), and with no Cloudflare in the
+# path nothing else is listening. This is the only always-on piece: it checks the
+# ngrok domain and pushes the kernel again when the endpoint stops answering.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: vexa-wake-gpu
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Probe the endpoint
+        id: probe
+        env:
+          BASE: https://${{ secrets.NGROK_DOMAIN }}
+          KEY: ${{ secrets.VEXA_MODEL_KEY }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "$BASE/v1/models" -H "authorization: Bearer $KEY" || echo 000)
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "endpoint answered $code"
+
+      - name: Start the kernel
+        if: steps.probe.outputs.code != '200'
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          VEXA_DIRECT_KEY: ${{ secrets.VEXA_MODEL_KEY }}
+          VEXA_NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          VEXA_NGROK_DOMAIN: ${{ secrets.NGROK_DOMAIN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.kaggle"
+          printf '{"username":"%s","key":"%s"}' "$KAGGLE_USERNAME" "$KAGGLE_KEY" > "$HOME/.kaggle/kaggle.json"
+          chmod 600 "$HOME/.kaggle/kaggle.json"
+          export KAGGLE_API_TOKEN="$KAGGLE_KEY"
+          python -m pip install -q kaggle six
+          # The repo has a kaggle/ directory, which shadows the package; run from /tmp.
+          cd /tmp
+          status=$(python -m kaggle kernels status black797/vexa-direct-gpu-endpoint 2>&1 || true)
+          echo "$status"
+          case "$status" in
+            *QUEUED*|*RUNNING*) echo "already starting or serving; leaving it alone"; exit 0 ;;
+          esac
+          cd "$GITHUB_WORKSPACE"
+          node --experimental-loader=./tools/py-text-loader.mjs tools/direct_notebook.mjs
+          cd /tmp
+          python -m kaggle kernels push -p "$GITHUB_WORKSPACE/kaggle"
