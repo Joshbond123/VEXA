@@ -366,7 +366,18 @@ async function freshDirectEndpoint(env) {
 // A kernel can stop announcing while its tunnel still answers (a dead announce
 // thread, a slow D1 write). Trust a tunnel that responds rather than falling back
 // to a relay that may have no quota left.
+async function configuredBaseUrl(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'public_base_url'").first();
+    const value = String((row && row.value) || '').trim();
+    if (/^https:\/\//.test(value)) return value.replace(/\/+$/, '').replace(/\/v1$/, '');
+  } catch {}
+  return null;
+}
+
 async function resolveDirectEndpoint(env) {
+  const configured = await configuredBaseUrl(env);
+  if (configured) return configured;
   const fresh = await freshDirectEndpoint(env);
   if (fresh) return fresh;
   if (!env.DIRECT_MODEL_KEY) return null;

@@ -310,7 +310,10 @@ function copyButton(text, label = 'Copy') {
 }
 
 function connectCard() {
-  const base = `${location.origin}/v1`;
+  // Inference no longer runs through this Worker, so the address to hand a client
+  // is whatever public_base_url says, with this host only as a fallback.
+  const configured = String((state.settings && state.settings.public_base_url) || '').trim();
+  const base = (configured || `${location.origin}/v1`).replace(/\/+$/, '');
   const served = (state.settings && state.settings.model_served_id) || 'qwen3.8-27b-uncensored-q6_k';
   // LiteLLM (and so OpenHands) rejects a bare model id: it needs the openai/ provider prefix.
   const model = /^[a-z0-9_-]+\//i.test(served) ? served : `openai/${served}`;
@@ -336,9 +339,11 @@ function connectCard() {
     ')',
   ].join('\n');
 
-  const engine = state.overview && state.overview.direct
-    ? `Served by the direct GPU endpoint (${state.overview.direct.host}) — the relay is not used.`
-    : 'No direct kernel is reporting right now, so requests go through the relay.';
+  const engine = configured
+    ? `Requests go straight to ${configured.replace(/\/v1$/, '')} — no Cloudflare in the path.`
+    : state.overview && state.overview.direct
+      ? `Served by the direct GPU endpoint (${state.overview.direct.host}).`
+      : 'No GPU endpoint is configured.';
 
   const testResult = el('p', { class: 'hint', text: '' });
   const testButton = el('button', {
@@ -368,7 +373,7 @@ function connectCard() {
       : el('p', { class: 'hint', text: 'Create a key to fill in the snippets below.' }),
     el('dl', { class: 'kv' },
       el('dt', { text: 'Base URL' }), el('dd', {}, el('span', { class: 'mono', text: base }), copyButton(base)),
-      state.overview && state.overview.direct
+      !configured && state.overview && state.overview.direct
         ? [el('dt', { text: 'Direct endpoint' }),
            el('dd', {}, el('span', { class: 'mono', text: `${state.overview.direct.url}/v1` }),
              copyButton(`${state.overview.direct.url}/v1`))]
