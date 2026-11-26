@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.openhands/
+.dev.vars
+.env
+*.log
+__pycache__/
+*.pyc

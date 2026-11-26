@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VEXA — GPU control plane</title>
+<meta name="color-scheme" content="dark" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div id="login" class="gate" hidden>
+  <form id="login-form" class="gate-card" autocomplete="on">
+    <div class="brand"><span class="brand-mark">V</span> VEXA</div>
+    <p class="muted">Kaggle GPU control plane</p>
+    <label>Username<input id="login-user" name="username" autocomplete="username" required /></label>
+    <label>Password<input id="login-pass" name="password" type="password" autocomplete="current-password" required /></label>
+    <button type="submit" class="primary">Sign in</button>
+    <p id="login-error" class="error" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">V</span> VEXA</div>
+    <div class="topbar-right">
+      <span id="gpu-pill" class="pill">checking…</span>
+      <span id="operator" class="muted"></span>
+      <button id="signout" class="ghost">Sign out</button>
+    </div>
+  </header>
+  <div class="shell">
+    <nav id="nav" aria-label="Sections">
+      <button class="nav" data-view="overview">Overview</button>
+      <button class="nav" data-view="gpu">GPU runtime</button>
+      <button class="nav" data-view="keys">API keys</button>
+      <button class="nav" data-view="logs">Logs</button>
+      <button class="nav" data-view="settings">Settings</button>
+    </nav>
+    <main>
+      <section id="view-overview" class="view"></section>
+      <section id="view-gpu" class="view" hidden></section>
+      <section id="view-keys" class="view" hidden></section>
+      <section id="view-logs" class="view" hidden></section>
+      <section id="view-settings" class="view" hidden></section>
+    </main>
+  </div>
+</div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

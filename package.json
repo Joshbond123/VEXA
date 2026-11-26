@@ -1,0 +1,14 @@
+{
+  "name": "vexa-kaggle",
+  "private": true,
+  "version": "3.0.0",
+  "description": "VEXA — Kaggle GPU model hosting platform",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
