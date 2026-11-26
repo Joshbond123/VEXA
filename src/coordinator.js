@@ -40,7 +40,20 @@ export class GpuHub {
   }
 
   async load() {
-    if (!this.s) this.s = (await this.storage.get('state')) || blankState();
+    if (this.s) return this.s;
+    const stored = await this.storage.get('state');
+    if (stored) {
+      this.s = stored;
+      return this.s;
+    }
+    // A new instance (new deploy) starts empty: rebuild from D1 so a live GPU
+    // session and its runtime token survive the rollout.
+    try {
+      const row = await this.env.DB.prepare('SELECT state_json FROM gpu_state WHERE id = 1').first();
+      if (row && row.state_json) this.s = { ...blankState(), ...JSON.parse(row.state_json) };
+    } catch {}
+    if (!this.s) this.s = blankState();
+    await this.storage.put('state', this.s);
     return this.s;
   }
 
@@ -56,17 +69,18 @@ export class GpuHub {
       await this.env.DB.prepare(
         `INSERT INTO gpu_state (id, status, phase, detail, session_id, kernel_version, started_at,
            allocated_at, ready_at, last_heartbeat, last_activity, active_jobs, progress, gpus_json,
-           model_json, error, stop_reason, updated_at)
-         VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           model_json, error, stop_reason, updated_at, state_json)
+         VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(id) DO UPDATE SET status=excluded.status, phase=excluded.phase, detail=excluded.detail,
            session_id=excluded.session_id, kernel_version=excluded.kernel_version, started_at=excluded.started_at,
            allocated_at=excluded.allocated_at, ready_at=excluded.ready_at, last_heartbeat=excluded.last_heartbeat,
            last_activity=excluded.last_activity, active_jobs=excluded.active_jobs, progress=excluded.progress,
            gpus_json=excluded.gpus_json, model_json=excluded.model_json, error=excluded.error,
-           stop_reason=excluded.stop_reason, updated_at=excluded.updated_at`,
+           stop_reason=excluded.stop_reason, updated_at=excluded.updated_at, state_json=excluded.state_json`,
       ).bind(s.status, s.phase, s.detail, s.sessionId, s.kernelVersion, s.startedAt, s.allocatedAt,
         s.readyAt, s.lastHeartbeat, s.lastActivity, s.activeJobs, s.progress,
-        JSON.stringify(s.gpus || []), JSON.stringify(s.model || null), s.error, s.stopReason, s.updatedAt).run();
+        JSON.stringify(s.gpus || []), JSON.stringify(s.model || null), s.error, s.stopReason, s.updatedAt,
+        JSON.stringify(s)).run();
     } catch {}
   }
 
@@ -99,7 +113,7 @@ export class GpuHub {
     const t = now();
     if (s.status === 'stopping' && t - (s.stopAt || t) > STOP_TIMEOUT_MS) return this.finalizeOff(s.stopReason || 'stop');
     if (s.status === 'starting' && t - (s.startedAt || t) > STARTUP_TIMEOUT_MS) return this.failSession('GPU startup timed out after 20 minutes');
-    if ((s.status === 'starting' || s.status === 'loading') && s.lastHeartbeat && t - s.lastHeartbeat > HEARTBEAT_STALE_MS) {
+    if ((s.status === 'starting' || s.status === 'loading') && s.allocatedAt && s.lastHeartbeat && t - s.lastHeartbeat > HEARTBEAT_STALE_MS) {
       return this.failSession('Lost contact with the GPU runtime');
     }
     return null;
@@ -117,7 +131,7 @@ export class GpuHub {
       case '/state': return this.json(publicState(this.s));
       case '/logs': return this.json({ lines: this.s.logTail || [] });
       case '/waitready': return this.json(await this.waitReady(Number(url.searchParams.get('timeout') || 20000)));
-      case '/ensure': return this.json(await this.ensure(body.reason || 'request'));
+      case '/ensure': return this.json(await this.ensure(body));
       case '/stop': return this.json(await this.stop(body.reason || 'manual'));
       case '/hold': return this.json(await this.hold(body.minutes));
       case '/enqueue': return this.json(await this.enqueue(body));
@@ -162,6 +176,9 @@ export class GpuHub {
       status: 'starting', phase: 'queued', detail: `Starting GPU (${reason})`, error: null,
       startedAt: now(), allocatedAt: null, readyAt: null, progress: 0, gpus: [], model: null,
       metrics: null, stopRequested: false, stopReason: null, stopAt: null, activeJobs: 0,
+      // A cold start takes minutes; a leftover timestamp from the last session made the
+      // heartbeat watchdog kill brand-new sessions before their kernel could register.
+      lastHeartbeat: null, logTail: [], kernelVersion: null, sawRunning: false,
       nonce: body.nonce || randomHex(16), runtimeHash: null, sessionId: 'gs_' + randomHex(6),
     });
     await this.save();
@@ -444,6 +461,10 @@ export class GpuHub {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(now(), entry.meta.id, entry.meta.keyId, entry.meta.status,
         u.prompt_tokens || 0, u.completion_tokens || 0, now() - entry.meta.createdAt, entry.meta.promptChars || 0).run();
+      if (entry.meta.keyId) {
+        await this.env.DB.prepare('UPDATE api_keys SET requests = requests + 1, last_used_at = ? WHERE id = ?')
+          .bind(now(), entry.meta.keyId).run();
+      }
     } catch {}
   }
 
@@ -527,7 +548,7 @@ export class GpuHub {
           return;
         }
         if (t - (s.startedAt || t) > STARTUP_TIMEOUT_MS) return this.failSession('GPU startup timed out after 20 minutes');
-        if (s.lastHeartbeat && t - s.lastHeartbeat > HEARTBEAT_STALE_MS) return this.failSession('Lost contact with the GPU runtime');
+        if (s.allocatedAt && s.lastHeartbeat && t - s.lastHeartbeat > HEARTBEAT_STALE_MS) return this.failSession('Lost contact with the GPU runtime');
         if (s.status === 'starting') await this.checkKernel();
         await this.state.storage.setAlarm(t + 10000);
         return;

@@ -60,7 +60,7 @@ const fmt = {
   },
 };
 
-const state = { view: 'overview', timers: [], overview: null, gpu: null };
+const state = { view: 'overview', timers: [], overview: null, gpu: null, settings: null, lastKey: null };
 
 function clearTimers() {
   for (const t of state.timers) clearInterval(t);
@@ -281,13 +281,79 @@ function renderGpu(gpu, lines) {
 
 async function loadKeys() {
   try {
-    const data = await api('/api/keys');
+    const [data, cfg] = await Promise.all([api('/api/keys'), api('/api/settings')]);
+    state.settings = cfg.settings || state.settings;
     renderKeys(data.keys || []);
   } catch (err) {
     if (!/Authentication/.test(err.message)) {
       $('#view-keys').replaceChildren(el('p', { class: 'error', text: err.message }));
     }
   }
+}
+
+function copyButton(text, label = 'Copy') {
+  return el('button', {
+    class: 'ghost',
+    type: 'button',
+    text: label,
+    onclick: async (event) => {
+      const button = event.currentTarget;
+      try {
+        await navigator.clipboard.writeText(text);
+        button.textContent = 'Copied';
+      } catch {
+        button.textContent = 'Select manually';
+      }
+      setTimeout(() => { button.textContent = label; }, 1600);
+    },
+  });
+}
+
+function connectCard() {
+  const base = `${location.origin}/v1`;
+  const model = (state.settings && state.settings.model_served_id) || 'qwen3.8-27b-uncensored-q6_k';
+  const secret = state.lastKey && state.lastKey.key;
+  const shown = secret || 'vx-… (create a key above, it is shown once)';
+  const env = [
+    `LLM_MODEL=openai/${model}`,
+    `LLM_BASE_URL=${base}`,
+    `LLM_API_KEY=${secret || 'vx-YOUR_KEY'}`,
+  ].join('\n');
+  const toml = [
+    '[llm]',
+    `model = "openai/${model}"`,
+    `base_url = "${base}"`,
+    `api_key = "${secret || 'vx-YOUR_KEY'}"`,
+  ].join('\n');
+  const sdk = [
+    'from openhands.sdk import LLM',
+    'llm = LLM(',
+    `    model="openai/${model}",`,
+    `    base_url="${base}",`,
+    `    api_key="${secret || 'vx-YOUR_KEY'}",`,
+    ')',
+  ].join('\n');
+
+  return card('Connect OpenHands',
+    secret
+      ? el('p', { class: 'hint', text: `Key “${state.lastKey.name}” created. This is the only time it is displayed — copy it now.` })
+      : el('p', { class: 'hint', text: 'Create a key to fill in the snippets below.' }),
+    el('dl', { class: 'kv' },
+      el('dt', { text: 'Base URL' }), el('dd', {}, el('span', { class: 'mono', text: base }), copyButton(base)),
+      el('dt', { text: 'Model' }), el('dd', {}, el('span', { class: 'mono', text: model }), copyButton(model)),
+      el('dt', { text: 'API key' }), el('dd', {},
+        el('span', { class: 'mono', text: shown }),
+        secret ? copyButton(secret) : null)),
+    el('p', { class: 'hint', text: 'Environment (.env / shell)' }),
+    el('pre', { class: 'snippet', text: env }),
+    el('div', { class: 'row' }, copyButton(env, 'Copy .env')),
+    el('p', { class: 'hint', text: 'config.toml' }),
+    el('pre', { class: 'snippet', text: toml }),
+    el('div', { class: 'row' }, copyButton(toml, 'Copy config.toml')),
+    el('p', { class: 'hint', text: 'Python SDK' }),
+    el('pre', { class: 'snippet', text: sdk }),
+    el('div', { class: 'row' }, copyButton(sdk, 'Copy snippet')),
+    el('p', { class: 'hint', text: 'The GPU starts by itself on the first request when auto-start is enabled; that first call waits for the model to load.' }));
 }
 
 function renderKeys(keys) {
@@ -301,19 +367,9 @@ function renderKeys(keys) {
       try {
         const created = await api('/api/keys', { method: 'POST', body: { name } });
         nameInput.value = '';
+        state.lastKey = created;
         await loadKeys();
-        $('#key-secret')?.replaceChildren(el('div', { class: 'secret' },
-          el('strong', { text: 'Copy this key now — it is shown once.' }),
-          el('code', { text: created.key }),
-          el('div', { class: 'row' },
-            el('button', {
-              class: 'ghost',
-              type: 'button',
-              text: 'Copy',
-              onclick: async () => {
-                try { await navigator.clipboard.writeText(created.key); } catch { /* clipboard blocked */ }
-              },
-            }))));
+        $('#connect-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } catch (err) {
         alert(err.message);
       }
@@ -347,8 +403,8 @@ function renderKeys(keys) {
 
   $('#view-keys').replaceChildren(
     el('div', { class: 'spread' }, el('h2', { text: 'API keys' }), el('span', { class: 'muted', text: 'OpenAI-compatible access' })),
+    Object.assign(connectCard(), { id: 'connect-panel' }),
     card('Create a key', form, el('p', { class: 'hint', text: 'Keys are stored hashed; the plaintext is returned once.' })),
-    el('div', { id: 'key-secret' }),
     table);
 }
 

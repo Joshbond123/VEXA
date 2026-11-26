@@ -38,9 +38,12 @@ MODEL_FILE = "Qwen3.8-27B-Uncensored-Q6_K.gguf"
 MODEL_BYTES = "22430999968"
 MODEL_SHA256 = ""
 MODEL_SERVED_ID = "qwen3.8-27b-uncensored-q6_k"
-CTX_SIZE = "32768"
+CTX_SIZE = "65536"
 PARALLEL_SLOTS = "2"
 IDLE_TIMEOUT_MINUTES = "20"
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [observability]
 enabled = true

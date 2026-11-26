@@ -7,10 +7,12 @@ import { error, json, now, randomHex, readJson, sha256hex, timingSafeEqual, trun
 
 export { GpuHub };
 
-const GPU_NAME = 'vexa-gpu-v2';
-
 function hub(env) {
-  return env.GPU.get(env.GPU.idFromName(GPU_NAME));
+  // Durable Object instances keep running their original bundle until eviction, so the
+  // instance name carries the deployment id. Every deploy gets fresh code, and the new
+  // instance restores the session state from D1.
+  const version = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id) || 'dev';
+  return env.GPU.get(env.GPU.idFromName(`vexa-gpu-${version}`));
 }
 
 async function gpu(env, path, body = {}, method = 'POST') {
