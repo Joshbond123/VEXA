@@ -274,6 +274,9 @@ async function overview(env, op) {
       remainingSeconds: quota?.gpu ? Math.max(0, quota.gpu.totalSeconds - quota.gpu.usedSeconds - quota.gpu.reservedSeconds) : null,
     },
     events: recent || [],
+    direct: await freshDirectEndpoint(env)
+      .then((url) => (url ? { url, host: new URL(url).host } : null))
+      .catch(() => null),
   };
 }
 
@@ -349,31 +352,40 @@ async function waitForGpu(env, state, deadline) {
 // involved and the model key never leaves the Worker.
 const DIRECT_STALE_MS = 30 * 60 * 1000;
 
-async function directProxy(request, env, path) {
-  const { row } = await apiKeyRow(env, request);
-  if (!row) return error('Invalid API key', 401);
-  const key = env.DIRECT_MODEL_KEY;
-  if (!key) return error('Direct proxying is not configured', 503);
-  const endpoint = await env.DB.prepare(
+async function freshDirectEndpoint(env) {
+  if (!env.DIRECT_MODEL_KEY) return null;
+  const row = await env.DB.prepare(
     "SELECT message, ts FROM events WHERE kind = 'direct-endpoint' ORDER BY ts DESC LIMIT 1",
   ).first();
-  if (!endpoint || now() - endpoint.ts > DIRECT_STALE_MS) {
-    return error('No direct kernel is reporting right now', 503);
-  }
-  const target = endpoint.message.replace(/\/+$/, '') + path.replace(/^\/direct/, '');
-  const upstream = await fetch(target, {
-    method: request.method,
+  if (!row || now() - row.ts > DIRECT_STALE_MS) return null;
+  return row.message.replace(/\/+$/, '');
+}
+
+async function proxyDirect(env, upstreamPath, bodyText, contentType) {
+  const base = await freshDirectEndpoint(env);
+  if (!base) return null;
+  const upstream = await fetch(base + upstreamPath, {
+    method: bodyText === undefined ? 'GET' : 'POST',
     headers: {
-      'content-type': request.headers.get('content-type') || 'application/json',
-      authorization: `Bearer ${key}`,
+      'content-type': contentType || 'application/json',
+      authorization: `Bearer ${env.DIRECT_MODEL_KEY}`,
     },
-    body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text(),
+    body: bodyText,
   });
   const headers = new Headers();
   headers.set('content-type', upstream.headers.get('content-type') || 'application/json');
   headers.set('cache-control', 'no-store');
-  headers.set('x-vexa-direct', new URL(target).host);
+  headers.set('x-vexa-direct', new URL(base).host);
   return new Response(upstream.body, { status: upstream.status, headers });
+}
+
+async function directProxy(request, env, path) {
+  const { row } = await apiKeyRow(env, request);
+  if (!row) return error('Invalid API key', 401);
+  if (!env.DIRECT_MODEL_KEY) return error('Direct proxying is not configured', 503);
+  const text = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.text();
+  const res = await proxyDirect(env, path.replace(/^\/direct/, ''), text, request.headers.get('content-type'));
+  return res || error('No direct kernel is reporting right now', 503);
 }
 
 async function openaiRoute(request, env, path) {
@@ -405,6 +417,10 @@ async function openaiRoute(request, env, path) {
   const payload = { ...body, model: cfg.servedModel };
   if (payload.max_tokens == null && payload.max_completion_tokens == null) payload.max_tokens = 4096;
   delete payload.max_completion_tokens;
+  // The relay spends a Durable Object request per flush, which a free plan cannot
+  // sustain. When a direct kernel is reporting, answer from it and leave the relay idle.
+  const direct = await proxyDirect(env, path, JSON.stringify(payload), 'application/json');
+  if (direct) return direct;
   let state = await gpu(env, '/state', {}, 'GET');
   try {
     if (!state || state.status === 'off' || state.status === 'error') {

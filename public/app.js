@@ -336,7 +336,12 @@ function connectCard() {
     ')',
   ].join('\n');
 
+  const engine = state.overview && state.overview.direct
+    ? `Served by the direct GPU endpoint (${state.overview.direct.host}) — the relay is not used.`
+    : 'No direct kernel is reporting right now, so requests go through the relay.';
+
   return card('Connect OpenHands',
+    el('p', { class: 'hint', text: engine }),
     secret
       ? el('p', { class: 'hint', text: `Key “${state.lastKey.name}” created. This is the only time it is displayed — copy it now.` })
       : el('p', { class: 'hint', text: 'Create a key to fill in the snippets below.' }),
